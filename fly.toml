@@ -17,11 +17,11 @@
 #   ADB_SERVER_URL=https://api.yourdomain.com \
 #   SESSION_SECRET=openssl rand -hex 48（随机64字符）
 
-app = "your-app-name"  # 改成你自己的 app name，fly launch 会填
+app = "adbcontrol-backend"
 primary_region = "hkg"
 
 [build]
-  builder = "dockerfile"
+  dockerfile = "Dockerfile"
 
 [env]
   ADB_SERVER_URL = "https://你的后端域名"
