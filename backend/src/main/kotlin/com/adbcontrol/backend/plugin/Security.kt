@@ -34,10 +34,20 @@ fun Application.configureSecurity(db: DatabaseService) {
                 org.apache.commons.codec.binary.Hex.encodeHexString(tmp)
             }
         cookie<UserSession>("ADB_SESSION") {
+            // 跨站部署(前端 *.workers.dev / *.pages.dev,后端 *.fly.dev)时,浏览器只在
+            // SameSite=None; Secure 的前提下才会保存并回传 session cookie。默认按跨站场景配置;
+            // 本地纯 http 开发可通过 SESSION_SAMESITE=Lax + SESSION_SECURE=false 覆盖。
+            val sameSite = config.propertyOrNull("session.same_site")?.getString()?.takeIf { it.isNotBlank() } ?: "None"
+            // SameSite=None 必须搭配 Secure,否则浏览器直接丢弃该 cookie。
+            val secure = if (sameSite.equals("None", ignoreCase = true)) {
+                true
+            } else {
+                config.propertyOrNull("session.secure")?.getString().toBoolean()
+            }
             cookie.path = "/"
             cookie.httpOnly = true
-            cookie.secure = config.propertyOrNull("session.secure")?.getString().toBoolean()
-            cookie.extensions["SameSite"] = "Lax"
+            cookie.secure = secure
+            cookie.extensions["SameSite"] = sameSite
             cookie.maxAgeInSeconds = 60 * 60 * 24 * 14
             transform(SessionTransportTransformerMessageAuthentication(hmacSha256Key(seed)))
         }

@@ -34,6 +34,7 @@ fun Application.configureCors() {
             origin == "http://localhost:5173" ||
                 origin == "http://localhost:4173" ||
                 origin.endsWith(".pages.dev") ||
+                origin.endsWith(".workers.dev") ||
                 origin.endsWith(".fly.dev") ||
                 origins.any { it == origin }
         }
