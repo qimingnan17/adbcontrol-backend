@@ -18,7 +18,7 @@
 #   SESSION_SECRET=openssl rand -hex 48（随机64字符）
 
 app = "adbcontrol-backend"
-primary_region = "hkg"
+primary_region = "sin"
 
 [build]
   dockerfile = "Dockerfile"
