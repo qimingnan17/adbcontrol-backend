@@ -1,0 +1,16 @@
+# 凭证不入 git
+secrets.properties
+*.local.properties
+local.properties
+
+# Gradle / 构建产物
+.gradle/
+build/
+**/build/
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.DS_Store

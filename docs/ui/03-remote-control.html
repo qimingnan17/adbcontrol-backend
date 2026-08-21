@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AdbControlApp · 截屏查看 + 远程控制</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #060812; --bg-deep: #02030A;
+    --glass-bg: rgba(255, 255, 255, 0.045);
+    --glass-bg-strong: rgba(255, 255, 255, 0.075);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-strong: rgba(255, 255, 255, 0.14);
+    --glass-hl: rgba(255, 255, 255, 0.22);
+    --c-cyan: #4FD1E0; --c-cyan-soft: rgba(79, 209, 224, 0.18);
+    --c-magenta: #FF5FAD; --c-magenta-soft: rgba(255, 95, 173, 0.18);
+    --c-emerald: #4ADE80; --c-amber: #FBBF24;
+    --c-rose: #FF6B6B; --c-slate: #64748B;
+    --font-display: 'Bricolage Grotesque', sans-serif;
+    --font-body: 'Manrope', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --shadow-hover: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--glass-border-strong), inset 0 1px 0 var(--glass-hl);
+    --r-sm: 10px; --r-md: 16px; --r-lg: 24px; --r-xl: 32px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg-base); color: #E8ECF4;
+    font-family: var(--font-body); min-height: 100vh;
+    overflow-x: hidden; -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: -20vmax;
+    background:
+      radial-gradient(40vmax 40vmax at 8% 18%, rgba(79, 209, 224, 0.18), transparent 60%),
+      radial-gradient(50vmax 50vmax at 92% 12%, rgba(255, 95, 173, 0.18), transparent 60%),
+      radial-gradient(60vmax 60vmax at 50% 110%, rgba(120, 100, 255, 0.14), transparent 60%),
+      linear-gradient(180deg, var(--bg-deep), var(--bg-base));
+    z-index: -2; filter: blur(8px);
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.4; pointer-events: none; z-index: -1; mix-blend-mode: overlay;
+  }
+  .app { max-width: 1480px; margin: 0 auto; padding: 24px clamp(20px, 4vw, 56px) 80px; }
+
+  /* 顶栏 */
+  .topbar {
+    display: flex; align-items: center; gap: 24px;
+    padding: 14px 22px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-lg); box-shadow: var(--shadow-soft);
+    position: sticky; top: 16px; z-index: 50;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    box-shadow: 0 6px 20px rgba(79, 209, 224, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-weight: 700;
+    color: #02030A; font-size: 18px; letter-spacing: -0.02em;
+  }
+  .brand-name { font-family: var(--font-display); font-weight: 600; font-size: 17px; letter-spacing: -0.02em; }
+  .brand-name span { color: var(--c-cyan); }
+  .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #9AA3B8; margin-left: 12px; }
+  .crumbs .sep { opacity: 0.4; }
+  .crumbs .cur { color: #E8ECF4; font-weight: 500; }
+  .topbar-spacer { flex: 1; }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    display: grid; place-items: center; cursor: pointer; color: #C7CEDD;
+    transition: all 0.2s;
+  }
+  .icon-btn:hover { background: var(--glass-bg-strong); transform: translateY(-1px); }
+
+  /* 工具栏 */
+  .toolbar {
+    margin-top: 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 22px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+  }
+  .tb-left { display: flex; align-items: center; gap: 16px; }
+  .tb-device {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 14px;
+  }
+  .tb-device .name {
+    font-family: var(--font-display); font-weight: 600;
+  }
+  .tb-device .id {
+    font-family: var(--font-mono); font-size: 11px; color: #64748B;
+  }
+  .tb-device .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-emerald); box-shadow: 0 0 8px var(--c-emerald); }
+  .tb-mid {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; color: #9AA3B8;
+  }
+  .tb-mid .live {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    color: var(--c-emerald); font-weight: 500;
+  }
+  .tb-mid .live .livedot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .tb-right { display: flex; gap: 8px; }
+  .tool-btn {
+    padding: 8px 14px; border-radius: 10px;
+    background: var(--glass-bg-strong); border: 1px solid var(--glass-border);
+    color: #C7CEDD; font-size: 12px; cursor: pointer;
+    transition: all 0.2s; display: flex; align-items: center; gap: 6px;
+  }
+  .tool-btn:hover { border-color: var(--glass-border-strong); transform: translateY(-1px); }
+  .tool-btn.active { background: var(--c-cyan-soft); border-color: var(--c-cyan); color: var(--c-cyan); }
+
+  /* 主区:左截屏 + 右控制台 */
+  .main-grid {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .screen-panel {
+    padding: 20px;
+    border-radius: var(--r-xl);
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+    position: relative; overflow: hidden;
+  }
+  .screen-meta {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .screen-title {
+    font-family: var(--font-display); font-size: 16px; font-weight: 600;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .screen-title .ts { font-family: var(--font-mono); font-size: 11px; color: #64748B; font-weight: 400; }
+  .quality-toggle {
+    display: flex; gap: 4px; padding: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+  }
+  .quality-toggle .q {
+    padding: 4px 10px; border-radius: 6px;
+    font-size: 11px; color: #9AA3B8; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .quality-toggle .q.active { background: var(--c-cyan-soft); color: var(--c-cyan); }
+
+  /* 截屏框:模拟一台设备屏幕 */
+  .device-frame {
+    position: relative;
+    margin: 0 auto;
+    aspect-ratio: 9 / 16;
+    max-height: 72vh;
+    width: auto; max-width: 100%;
+    border: 8px solid #0A0D1A;
+    border-radius: 32px;
+    box-shadow:
+      0 30px 80px rgba(0, 0, 0, 0.6),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+      inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    background: #0F1219;
+    overflow: hidden;
+  }
+  /* 屏幕内容(占位:模拟主屏) */
+  .device-screen {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(ellipse at top, rgba(79, 209, 224, 0.12), transparent 50%),
+      linear-gradient(180deg, #1A1F2E, #0F1219);
+    display: flex; flex-direction: column;
+    padding: 14px;
+  }
+  /* 状态栏 */
+  .status-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--font-mono); font-size: 10px;
+    color: #C7CEDD; padding: 4px 8px;
+  }
+  .status-bar .right { display: flex; gap: 6px; align-items: center; }
+  .status-bar .ico { width: 12px; height: 8px; }
+  .battery {
+    display: flex; align-items: center; gap: 3px;
+    padding: 1px 4px; border-radius: 3px;
+    background: rgba(74, 222, 128, 0.15); color: var(--c-emerald);
+    font-size: 9px;
+  }
+  /* 应用网格 */
+  .app-grid {
+    margin-top: 28px;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 18px 14px;
+  }
+  .app-icon {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
+  .app-icon .ic {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: linear-gradient(135deg, rgba(79, 209, 224, 0.4), rgba(255, 95, 173, 0.3));
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: grid; place-items: center;
+    font-size: 18px;
+  }
+  .app-icon .lbl {
+    font-size: 9px; color: #C7CEDD;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  }
+  .app-icon .ic.green { background: linear-gradient(135deg, rgba(74, 222, 128, 0.4), rgba(34, 197, 94, 0.2)); }
+  .app-icon .ic.blue { background: linear-gradient(135deg, rgba(79, 209, 224, 0.4), rgba(59, 130, 246, 0.2)); }
+  .app-icon .ic.pink { background: linear-gradient(135deg, rgba(255, 95, 173, 0.4), rgba(244, 114, 182, 0.2)); }
+  .app-icon .ic.gray { background: rgba(255, 255, 255, 0.06); }
+
+  /* 模拟点击标记 */
+  .tap-marker {
+    position: absolute;
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 2px solid var(--c-magenta);
+    background: rgba(255, 95, 173, 0.15);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    animation: tapPulse 1.2s ease-out infinite;
+  }
+  .tap-marker::after {
+    content: ""; position: absolute;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--c-magenta); box-shadow: 0 0 12px var(--c-magenta);
+  }
+  @keyframes tapPulse {
+    0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1.5); opacity: 0; }
+  }
+
+  /* 底部 dock */
+  .dock {
+    margin-top: auto;
+    display: flex; justify-content: space-around; align-items: center;
+    padding: 12px 0 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .dock-btn {
+    width: 36px; height: 36px; border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    display: grid; place-items: center; color: #C7CEDD;
+  }
+  .dock-btn.main {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    color: #02030A; border: 0;
+    box-shadow: 0 4px 16px rgba(79, 209, 224, 0.4);
+  }
+
+  /* 历史缩略图 */
+  .thumbs {
+    display: flex; gap: 8px;
+    margin-top: 16px; padding: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-md);
+    overflow-x: auto;
+  }
+  .thumb {
+    width: 60px; height: 106px; flex-shrink: 0;
+    border-radius: 8px;
+    background: linear-gradient(180deg, #1A1F2E, #0F1219);
+    border: 1px solid var(--glass-border);
+    cursor: pointer; transition: all 0.2s;
+    position: relative;
+  }
+  .thumb:hover { border-color: var(--c-cyan); transform: translateY(-2px); }
+  .thumb.active { border-color: var(--c-cyan); box-shadow: 0 0 0 2px var(--c-cyan-soft); }
+  .thumb .tm {
+    position: absolute; bottom: 4px; left: 4px;
+    font-family: var(--font-mono); font-size: 8px;
+    color: #64748B;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 1px 3px; border-radius: 2px;
+  }
+
+  /* 右侧控制台 */
+  .control-panel {
+    display: flex; flex-direction: column;
+    gap: 16px;
+  }
+  .cp-card {
+    padding: 20px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+  }
+  .cp-title {
+    font-family: var(--font-display);
+    font-size: 14px; font-weight: 600;
+    margin-bottom: 14px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .cp-title .hint { font-family: var(--font-mono); font-size: 10px; color: #64748B; font-weight: 400; }
+
+  /* 按键九宫格 */
+  .key-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+  .key {
+    padding: 14px 0;
+    border-radius: 12px;
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    color: #C7CEDD; cursor: pointer;
+    transition: all 0.15s;
+    display: grid; place-items: center;
+  }
+  .key:hover { border-color: var(--glass-border-strong); transform: translateY(-1px); background: rgba(255, 255, 255, 0.08); }
+  .key:active { transform: translateY(1px); background: var(--c-cyan-soft); border-color: var(--c-cyan); color: var(--c-cyan); }
+  .key .kp { font-size: 10px; margin-top: 4px; color: #64748B; }
+  .key .kglyph { font-size: 18px; }
+  .key.danger:hover { background: rgba(255, 107, 107, 0.08); border-color: rgba(255, 107, 107, 0.3); color: var(--c-rose); }
+
+  /* 手势区 */
+  .gesture-pad {
+    aspect-ratio: 1 / 1;
+    border-radius: var(--r-md);
+    background:
+      radial-gradient(circle at 30% 30%, var(--c-cyan-soft), transparent 40%),
+      radial-gradient(circle at 70% 70%, var(--c-magenta-soft), transparent 40%),
+      rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    position: relative; overflow: hidden;
+    display: grid; place-items: center;
+    margin-bottom: 12px;
+  }
+  .gesture-pad::before {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+  .gp-hint {
+    position: relative; z-index: 2;
+    text-align: center;
+    color: #64748B; font-size: 11px;
+  }
+  .gp-hint .big { font-family: var(--font-display); font-size: 16px; color: #9AA3B8; font-weight: 600; }
+  .gesture-row {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+  }
+  .gesture-btn {
+    padding: 8px 0; border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--glass-border);
+    color: #9AA3B8; font-size: 10px;
+    cursor: pointer; transition: all 0.2s;
+    text-align: center;
+  }
+  .gesture-btn:hover { color: var(--c-cyan); border-color: var(--c-cyan); }
+
+  /* shell 命令 */
+  .shell-area {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #9AA3B8;
+    min-height: 120px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 10px;
+  }
+  .shell-line { display: flex; gap: 6px; padding: 2px 0; }
+  .shell-line .pmt { color: var(--c-emerald); }
+  .shell-line .cmd { color: #C7CEDD; }
+  .shell-line .out { color: #64748B; }
+  .shell-input-row {
+    display: flex; gap: 8px;
+  }
+  .shell-input {
+    flex: 1;
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    color: #E8ECF4;
+    font-family: var(--font-mono); font-size: 12px;
+    outline: none;
+  }
+  .shell-input:focus { border-color: var(--c-cyan); }
+  .shell-send {
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: var(--c-cyan-soft);
+    border: 1px solid var(--c-cyan);
+    color: var(--c-cyan); font-size: 12px;
+    cursor: pointer;
+  }
+
+  /* 通信状态 */
+  .comms-list {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .comm-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    font-size: 12px;
+  }
+  .comm-row .lbl { color: #9AA3B8; font-family: var(--font-mono); }
+  .comm-row .val { color: var(--c-emerald); font-family: var(--font-mono); }
+  .comm-row .val.warn { color: var(--c-amber); }
+
+  /* 响应式 */
+  @media (max-width: 1100px) {
+    .main-grid { grid-template-columns: 1fr; }
+    .device-frame { max-height: 70vh; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div class="brand-name">Adb<span>Control</span></div>
+    </div>
+    <nav class="crumbs">
+      <span>Controller</span><span class="sep">/</span>
+      <span>Devices</span><span class="sep">/</span>
+      <span class="cur">device-a001 / 远控</span>
+    </nav>
+    <div class="topbar-spacer"></div>
+    <button class="icon-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></button>
+    <button class="icon-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
+  </header>
+
+  <!-- 工具栏 -->
+  <div class="toolbar">
+    <div class="tb-left">
+      <div class="tb-device">
+        <div class="dot"></div>
+        <div>
+          <div class="name">儿子的平板</div>
+          <div class="id">device-a001 · Android 14</div>
+        </div>
+      </div>
+    </div>
+    <div class="tb-mid">
+      <div class="live"><span class="livedot"></span>LIVE · 1.2s 延迟</div>
+      <span>·</span>
+      <span>截屏 2.1 MB · R2</span>
+    </div>
+    <div class="tb-right">
+      <button class="tool-btn active">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/></svg>
+        截屏
+      </button>
+      <button class="tool-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4V8z"/></svg>
+        录屏
+      </button>
+      <button class="tool-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        下载
+      </button>
+      <button class="tool-btn">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+        设置
+      </button>
+    </div>
+  </div>
+
+  <!-- 主区 -->
+  <div class="main-grid">
+
+    <!-- 左:截屏 -->
+    <main class="screen-panel">
+      <div class="screen-meta">
+        <div class="screen-title">
+          实时截屏
+          <span class="ts">2026-08-20 14:31:08 · #1284</span>
+        </div>
+        <div class="quality-toggle">
+          <span class="q">LOW</span>
+          <span class="q active">HD</span>
+          <span class="q">RAW</span>
+        </div>
+      </div>
+
+      <!-- 设备屏幕 -->
+      <div class="device-frame">
+        <div class="device-screen">
+          <!-- 状态栏 -->
+          <div class="status-bar">
+            <span>14:31</span>
+            <div class="right">
+              <span>WiFi</span>
+              <span class="battery">⚡82%</span>
+            </div>
+          </div>
+
+          <!-- 应用网格 -->
+          <div class="app-grid">
+            <div class="app-icon"><div class="ic green">微</div><div class="lbl">微信</div></div>
+            <div class="app-icon"><div class="ic pink">抖</div><div class="lbl">抖音</div></div>
+            <div class="app-icon"><div class="ic blue">B</div><div class="lbl">B站</div></div>
+            <div class="app-icon"><div class="ic gray">⚙</div><div class="lbl">设置</div></div>
+            <div class="app-icon"><div class="ic gray">电</div><div class="lbl">电话</div></div>
+            <div class="app-icon"><div class="ic gray">相</div><div class="lbl">相册</div></div>
+            <div class="app-icon"><div class="ic gray">地</div><div class="lbl">地图</div></div>
+            <div class="app-icon"><div class="ic gray">邮</div><div class="lbl">邮箱</div></div>
+            <div class="app-icon"><div class="ic gray">时</div><div class="lbl">时钟</div></div>
+            <div class="app-icon"><div class="ic gray">天</div><div class="lbl">天气</div></div>
+            <div class="app-icon"><div class="ic gray">文</div><div class="lbl">文件</div></div>
+            <div class="app-icon"><div class="ic gray">计</div><div class="lbl">计算器</div></div>
+          </div>
+
+          <!-- 模拟点击标记 -->
+          <div class="tap-marker" style="top: 30%; left: 18%;"></div>
+
+          <!-- dock -->
+          <div class="dock">
+            <div class="dock-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+            </div>
+            <div class="dock-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+            </div>
+            <div class="dock-btn main">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/></svg>
+            </div>
+            <div class="dock-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            </div>
+            <div class="dock-btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 历史缩略图 -->
+      <div class="thumbs">
+        <div class="thumb active"><div class="tm">14:31</div></div>
+        <div class="thumb"><div class="tm">14:30</div></div>
+        <div class="thumb"><div class="tm">14:25</div></div>
+        <div class="thumb"><div class="tm">14:20</div></div>
+        <div class="thumb"><div class="tm">14:15</div></div>
+        <div class="thumb"><div class="tm">14:10</div></div>
+        <div class="thumb"><div class="tm">14:05</div></div>
+        <div class="thumb"><div class="tm">14:00</div></div>
+      </div>
+    </main>
+
+    <!-- 右:控制台 -->
+    <aside class="control-panel">
+
+      <!-- 按键九宫格 -->
+      <div class="cp-card">
+        <div class="cp-title">硬件按键<span class="hint">Shizuku input</span></div>
+        <div class="key-grid">
+          <div class="key">
+            <div>
+              <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+              <div class="kp">音量+</div>
+            </div>
+          </div>
+          <div class="key">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7.79"/><circle cx="16" cy="20" r="1"/></svg>
+            <div class="kp">电源</div>
+          </div>
+          <div class="key">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+            <div class="kp">音量−</div>
+          </div>
+
+          <div class="key">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>
+            <div class="kp">HOME</div>
+          </div>
+          <div class="key">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h6"/></svg>
+            <div class="kp">最近</div>
+          </div>
+          <div class="key">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            <div class="kp">返回</div>
+          </div>
+
+          <div class="key danger">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+            <div class="kp">锁屏</div>
+          </div>
+          <div class="key danger">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.5 0 4.7 1 6.4 2.6"/><path d="M21 4v5h-5"/></svg>
+            <div class="kp">重启</div>
+          </div>
+          <div class="key danger">
+            <svg class="kglyph" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <div class="kp">关机</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 手势 -->
+      <div class="cp-card">
+        <div class="cp-title">手势<span class="hint">在屏幕上拖拽</span></div>
+        <div class="gesture-pad">
+          <div class="gp-hint">
+            <div class="big">拖拽模拟点击 / 滑动</div>
+            <div>tap / swipe / long-press</div>
+          </div>
+        </div>
+        <div class="gesture-row">
+          <button class="gesture-btn">点击</button>
+          <button class="gesture-btn">滑动 ↑</button>
+          <button class="gesture-btn">滑动 ↓</button>
+          <button class="gesture-btn">长按</button>
+        </div>
+      </div>
+
+      <!-- shell -->
+      <div class="cp-card">
+        <div class="cp-title">Shell<span class="hint">shizuku exec</span></div>
+        <div class="shell-area">
+          <div class="shell-line"><span class="pmt">$</span> <span class="cmd">dumpsys activity | grep Resumed</span></div>
+          <div class="shell-line"><span class="out">topResumedActivity=ActivityRecord{... com.tencent.mm/.ui.LauncherUI}</span></div>
+          <div class="shell-line"><span class="pmt">$</span> <span class="cmd">am force-stop com.ss.android.ugc.aweme</span></div>
+          <div class="shell-line"><span class="out">✓ OK · 230ms</span></div>
+          <div class="shell-line"><span class="pmt">$</span> <span style="opacity:0.5">_</span></div>
+        </div>
+        <div class="shell-input-row">
+          <input class="shell-input" placeholder="输入 shell 命令..." />
+          <button class="shell-send">执行</button>
+        </div>
+      </div>
+
+      <!-- 通信状态 -->
+      <div class="cp-card">
+        <div class="cp-title">链路状态</div>
+        <div class="comms-list">
+          <div class="comm-row"><span class="lbl">MQTT round-trip</span><span class="val">218ms</span></div>
+          <div class="comm-row"><span class="lbl">Shizuku 状态</span><span class="val">connected</span></div>
+          <div class="comm-row"><span class="lbl">截屏获取</span><span class="val warn">1.2s · accessibility</span></div>
+          <div class="comm-row"><span class="lbl">R2 上传</span><span class="val">410ms</span></div>
+          <div class="comm-row"><span class="lbl">签名校验</span><span class="val">✓</span></div>
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+</div>
+</body>
+</html>

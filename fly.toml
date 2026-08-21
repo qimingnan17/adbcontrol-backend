@@ -1,0 +1,47 @@
+# 注入命令示例（flyctl 里执行）：
+# fly secrets set \
+#   ADB_EMQX_HOST=o8cc1111.ala.cn-hangzhou.emqxsl.cn \
+#   ADB_EMQX_PORT=8883 \
+#   ADB_EMQX_APP_ID=o8cc1111 \
+#   ADB_EMQX_APP_SECRET=EMQX控制台复制 \
+#   ADB_EMQX_REST_ENDPOINT=https://o8cc1111.ala.cn-hangzhou.emqxsl.cn:8443 \
+#   ADB_R2_ENDPOINT=https://696e933486bc331658bce6378aaceaea.r2.cloudflarestorage.com \
+#   ADB_R2_BUCKET=slss-boby \
+#   ADB_R2_ACCESS_KEY=R2控制台复制 \
+#   ADB_R2_ACCESS_SECRET=R2控制台复制 \
+#   ADB_MYSQL_HOST=mysql6.sqlpub.com \
+#   ADB_MYSQL_PORT=3311 \
+#   ADB_MYSQL_NAME=slss12 \
+#   ADB_MYSQL_USER=slss12 \
+#   ADB_MYSQL_PASSWORD=kYxWgH8ySV0tGiqN \
+#   ADB_SERVER_URL=https://api.yourdomain.com \
+#   SESSION_SECRET=openssl rand -hex 48（随机64字符）
+
+app = "your-app-name"  # 改成你自己的 app name，fly launch 会填
+primary_region = "hkg"
+
+[build]
+  builder = "dockerfile"
+
+[env]
+  ADB_SERVER_URL = "https://你的后端域名"
+  PORT = "8080"
+  KTOR_ENV = "production"
+  SESSION_SECURE = "true"
+
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "30s"
