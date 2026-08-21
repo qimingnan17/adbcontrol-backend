@@ -25,6 +25,8 @@ data class BackendConfig(
     val emqxAppId: String,
     val emqxRestEndpoint: String,
     val emqxAppSecret: String,
+    /** EMQX 发布接口路径(拼在 emqxRestEndpoint 之后)。EMQX 5.x=/publish,旧版 4.x=/mqtt/v1/publish。 */
+    val emqxPublishPath: String,
     val r2Endpoint: String,
     val r2Bucket: String,
     val r2AccessKey: String,
@@ -90,6 +92,8 @@ data class BackendConfig(
         private const val DEFAULT_EMQX_PORT = 8883
         private const val DEFAULT_EMQX_APP_ID = "o8cc1111"
         private const val DEFAULT_EMQX_REST = "https://o8cc1111.ala.cn-hangzhou.emqxsl.cn:8443"
+        // EMQX 5.x REST API 发布路径(拼在 rest_endpoint=.../api/v5 之后 → /api/v5/publish)
+        private const val DEFAULT_EMQX_PUBLISH_PATH = "/publish"
         private const val DEFAULT_R2_ENDPOINT = "https://696e933486bc331658bce6378aaceaea.r2.cloudflarestorage.com"
         private const val DEFAULT_R2_BUCKET = "slss-boby"
         private const val DEFAULT_DB_HOST = "mysql6.sqlpub.com"
@@ -129,6 +133,7 @@ data class BackendConfig(
                 emqxAppId = get("ADB_EMQX_APP_ID", "emqx.appid", DEFAULT_EMQX_APP_ID),
                 emqxRestEndpoint = get("ADB_EMQX_REST_ENDPOINT", "emqx.rest_endpoint", DEFAULT_EMQX_REST),
                 emqxAppSecret = get("ADB_EMQX_APP_SECRET", "emqx.app_secret", ""),
+                emqxPublishPath = get("ADB_EMQX_PUBLISH_PATH", "emqx.publish_path", DEFAULT_EMQX_PUBLISH_PATH),
                 r2Endpoint = get("ADB_R2_ENDPOINT", "r2.endpoint", DEFAULT_R2_ENDPOINT),
                 r2Bucket = get("ADB_R2_BUCKET", "r2.bucket", DEFAULT_R2_BUCKET),
                 r2AccessKey = get("ADB_R2_ACCESS_KEY", "r2.access_key", ""),

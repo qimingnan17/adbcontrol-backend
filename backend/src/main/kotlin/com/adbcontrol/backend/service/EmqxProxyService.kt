@@ -104,7 +104,7 @@ class EmqxProxyService(private val config: BackendConfig) : AutoCloseable {
             append("\",\"qos\":").append(qos)
             append(",\"retain\":false}")
         }
-        return proxyPost("/mqtt/v1/publish", body)
+        return proxyPost(config.emqxPublishPath, body)
     }
 
     private fun encode(s: String): String =
