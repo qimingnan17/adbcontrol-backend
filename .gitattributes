@@ -1,0 +1,4 @@
+# 强制 shell 脚本用 LF 换行，避免 Windows CRLF 导致容器内 shebang 失效
+* text=auto
+gradlew text eol=lf
+*.sh text eol=lf

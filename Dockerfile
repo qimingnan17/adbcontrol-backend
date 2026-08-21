@@ -11,8 +11,8 @@ COPY gradle/ gradle/
 COPY shared/ shared/
 COPY backend/ backend/
 
-# 构建 installDist
-RUN chmod +x gradlew && ./gradlew :backend:installDist --no-daemon
+# 构建 installDist（先把 gradlew 的 Windows CRLF 换行转成 LF，否则 shebang 解析失败 exit 127）
+RUN sed -i 's/\r$//' gradlew && chmod +x gradlew && ./gradlew :backend:installDist --no-daemon
 
 # Stage 2: 运行
 FROM eclipse-temurin:17-jre-jammy
