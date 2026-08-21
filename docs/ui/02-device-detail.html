@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AdbControlApp · Device Detail + Task Editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #060812;
+    --bg-deep: #02030A;
+    --glass-bg: rgba(255, 255, 255, 0.045);
+    --glass-bg-strong: rgba(255, 255, 255, 0.075);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-strong: rgba(255, 255, 255, 0.14);
+    --glass-hl: rgba(255, 255, 255, 0.22);
+    --c-cyan: #4FD1E0;
+    --c-cyan-soft: rgba(79, 209, 224, 0.18);
+    --c-magenta: #FF5FAD;
+    --c-magenta-soft: rgba(255, 95, 173, 0.18);
+    --c-emerald: #4ADE80;
+    --c-amber: #FBBF24;
+    --c-rose: #FF6B6B;
+    --c-slate: #64748B;
+    --font-display: 'Bricolage Grotesque', sans-serif;
+    --font-body: 'Manrope', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --shadow-hover: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--glass-border-strong), inset 0 1px 0 var(--glass-hl);
+    --r-sm: 10px; --r-md: 16px; --r-lg: 24px; --r-xl: 32px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg-base); color: #E8ECF4;
+    font-family: var(--font-body); min-height: 100vh;
+    overflow-x: hidden; -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: -20vmax;
+    background:
+      radial-gradient(40vmax 40vmax at 8% 18%, rgba(79, 209, 224, 0.18), transparent 60%),
+      radial-gradient(50vmax 50vmax at 92% 12%, rgba(255, 95, 173, 0.18), transparent 60%),
+      radial-gradient(60vmax 60vmax at 50% 110%, rgba(120, 100, 255, 0.14), transparent 60%),
+      linear-gradient(180deg, var(--bg-deep), var(--bg-base));
+    z-index: -2; filter: blur(8px);
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.4; pointer-events: none; z-index: -1; mix-blend-mode: overlay;
+  }
+  .app { max-width: 1480px; margin: 0 auto; padding: 24px clamp(20px, 4vw, 56px) 80px; }
+
+  /* 顶部栏 */
+  .topbar {
+    display: flex; align-items: center; gap: 24px;
+    padding: 14px 22px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-lg); box-shadow: var(--shadow-soft);
+    position: sticky; top: 16px; z-index: 50;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    box-shadow: 0 6px 20px rgba(79, 209, 224, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-weight: 700;
+    color: #02030A; font-size: 18px; letter-spacing: -0.02em;
+  }
+  .brand-name { font-family: var(--font-display); font-weight: 600; font-size: 17px; letter-spacing: -0.02em; }
+  .brand-name span { color: var(--c-cyan); }
+  .crumbs { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #9AA3B8; margin-left: 12px; }
+  .crumbs .sep { opacity: 0.4; }
+  .crumbs .cur { color: #E8ECF4; font-weight: 500; }
+  .topbar-spacer { flex: 1; }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: var(--glass-bg); border: 1px solid var(--glass-border);
+    display: grid; place-items: center; cursor: pointer; color: #C7CEDD;
+    transition: all 0.2s;
+  }
+  .icon-btn:hover { background: var(--glass-bg-strong); transform: translateY(-1px); }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--c-magenta), var(--c-cyan));
+    display: grid; place-items: center;
+    font-weight: 600; font-size: 14px; color: #02030A;
+    cursor: pointer; box-shadow: 0 4px 14px rgba(255, 95, 173, 0.3);
+  }
+
+  /* 设备标题 hero */
+  .dev-hero {
+    margin-top: 28px;
+    padding: 28px 36px;
+    border-radius: var(--r-xl);
+    background: var(--glass-bg);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+    position: relative; overflow: hidden;
+    display: grid; grid-template-columns: auto 1fr auto;
+    gap: 28px; align-items: center;
+  }
+  .dev-hero::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(circle at 10% 50%, var(--c-cyan-soft), transparent 50%);
+    pointer-events: none;
+  }
+  .dev-icon {
+    width: 64px; height: 64px; border-radius: 20px;
+    background: linear-gradient(135deg, rgba(79, 209, 224, 0.3), rgba(255, 95, 173, 0.2));
+    border: 1px solid var(--glass-border-strong);
+    display: grid; place-items: center;
+    box-shadow: inset 0 1px 0 var(--glass-hl);
+    position: relative; z-index: 2;
+  }
+  .dev-info { position: relative; z-index: 2; }
+  .dev-name {
+    font-family: var(--font-display);
+    font-size: 28px; font-weight: 600;
+    letter-spacing: -0.03em;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .dev-name .pill {
+    font-size: 11px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    color: var(--c-emerald);
+    display: flex; align-items: center; gap: 6px;
+    font-weight: 500;
+  }
+  .dev-name .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+  .dev-sub {
+    margin-top: 6px;
+    font-family: var(--font-mono);
+    font-size: 12px; color: #64748B;
+  }
+  .dev-quick { display: flex; gap: 10px; position: relative; z-index: 2; }
+  .quick-btn {
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: var(--glass-bg-strong);
+    border: 1px solid var(--glass-border);
+    color: #C7CEDD;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .quick-btn:hover { border-color: var(--glass-border-strong); transform: translateY(-1px); }
+  .quick-btn.primary {
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    color: #02030A; border-color: transparent;
+    box-shadow: 0 6px 20px rgba(79, 209, 224, 0.35);
+  }
+  .quick-btn.danger { color: var(--c-rose); border-color: rgba(255, 107, 107, 0.3); }
+  .quick-btn.danger:hover { background: rgba(255, 107, 107, 0.1); }
+
+  /* 主区:左遥测 + 右任务 */
+  .main-grid {
+    margin-top: 28px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .section-title {
+    font-family: var(--font-display);
+    font-size: 20px; font-weight: 600;
+    letter-spacing: -0.02em;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .tab-row { display: flex; gap: 4px; padding: 4px; background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 12px; }
+  .tab {
+    padding: 6px 12px; border-radius: 8px;
+    font-size: 12px; color: #9AA3B8; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .tab.active { background: var(--c-cyan-soft); color: var(--c-cyan); }
+  .tab:hover:not(.active) { color: #E8ECF4; }
+
+  .panel {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+  }
+
+  /* 状态网格 */
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .stat-cell {
+    padding: 14px;
+    border-radius: var(--r-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+  }
+  .stat-cell .lbl {
+    font-size: 10px; color: #64748B;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    margin-bottom: 6px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .stat-cell .lbl .ico { color: var(--c-cyan); }
+  .stat-cell .val {
+    font-family: var(--font-mono);
+    font-size: 16px; color: #E8ECF4;
+  }
+  .stat-cell .val .sub { color: #64748B; font-size: 11px; margin-left: 4px; }
+
+  /* 能力雷达大 */
+  .radar-block {
+    display: grid; grid-template-columns: 220px 1fr;
+    gap: 20px; align-items: center;
+    padding: 20px; border-radius: var(--r-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+  }
+  .radar-big svg { width: 100%; height: auto; }
+  .cap-list { display: flex; flex-direction: column; gap: 8px; }
+  .cap-row {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--glass-border);
+  }
+  .cap-row:last-child { border: 0; }
+  .cap-row .name { display: flex; align-items: center; gap: 8px; color: #C7CEDD; }
+  .cap-row .name .ic {
+    width: 20px; height: 20px; border-radius: 6px;
+    display: grid; place-items: center;
+    background: rgba(255, 255, 255, 0.06);
+  }
+  .cap-row .badge {
+    font-family: var(--font-mono);
+    font-size: 10px; padding: 2px 6px; border-radius: 4px;
+  }
+  .cap-row .badge.on { background: rgba(74, 222, 128, 0.15); color: var(--c-emerald); }
+  .cap-row .badge.off { background: rgba(100, 116, 139, 0.15); color: #9AA3B8; }
+
+  /* 应用使用排行 */
+  .usage-list { margin-top: 20px; }
+  .usage-item {
+    display: grid;
+    grid-template-columns: 24px 1fr 80px 60px;
+    gap: 12px; align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--glass-border);
+    font-size: 13px;
+  }
+  .usage-item:last-child { border: 0; }
+  .usage-rank {
+    font-family: var(--font-display);
+    font-size: 14px; color: #64748B;
+    font-weight: 600;
+  }
+  .usage-name { color: #E8ECF4; font-weight: 500; }
+  .usage-name .pkg { display: block; font-family: var(--font-mono); font-size: 10px; color: #64748B; margin-top: 2px; }
+  .usage-bar {
+    height: 6px; background: rgba(255, 255, 255, 0.06); border-radius: 3px; overflow: hidden;
+  }
+  .usage-bar .fill {
+    height: 100%; background: linear-gradient(90deg, var(--c-cyan), var(--c-magenta));
+    border-radius: 3px;
+  }
+  .usage-time { font-family: var(--font-mono); color: #C7CEDD; text-align: right; font-size: 12px; }
+
+  /* 位置卡 */
+  .loc-block {
+    margin-top: 20px;
+    padding: 16px;
+    border-radius: var(--r-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .loc-coord {
+    font-family: var(--font-mono);
+    font-size: 12px; color: #C7CEDD; line-height: 1.8;
+  }
+  .loc-coord .k { color: #64748B; }
+  .map-mock {
+    height: 100px;
+    border-radius: 8px;
+    background:
+      radial-gradient(circle at 40% 60%, var(--c-cyan-soft), transparent 30%),
+      linear-gradient(135deg, rgba(79, 209, 224, 0.06), rgba(255, 95, 173, 0.06));
+    border: 1px solid var(--glass-border);
+    position: relative;
+    display: grid; place-items: center;
+  }
+  .map-mock .pin {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--c-magenta);
+    box-shadow: 0 0 0 4px rgba(255, 95, 173, 0.25), 0 0 16px var(--c-magenta);
+  }
+  .map-mock .pin::after {
+    content: ""; position: absolute;
+    width: 40px; height: 40px;
+    border: 1px solid var(--c-magenta); border-radius: 50%;
+    opacity: 0.3; animation: ring 2s ease-out infinite;
+  }
+  @keyframes ring { from { transform: scale(0.5); opacity: 0.6; } to { transform: scale(2); opacity: 0; } }
+
+  /* ====== 任务编辑表单 ====== */
+  .form-block {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+  }
+  .form-title {
+    font-family: var(--font-display);
+    font-size: 18px; font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+  .form-desc { font-size: 12px; color: #9AA3B8; margin-bottom: 22px; }
+
+  .field { margin-bottom: 20px; }
+  .field-label {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; color: #9AA3B8;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    margin-bottom: 8px;
+  }
+  .field-label .req { color: var(--c-magenta); }
+
+  .input, .select, .textarea {
+    width: 100%;
+    padding: 11px 14px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    color: #E8ECF4; font-family: var(--font-body); font-size: 14px;
+    outline: none; transition: all 0.2s;
+  }
+  .input.mono { font-family: var(--font-mono); font-size: 13px; }
+  .input:focus, .select:focus, .textarea:focus {
+    border-color: var(--c-cyan); background: rgba(79, 209, 224, 0.04);
+    box-shadow: 0 0 0 3px rgba(79, 209, 224, 0.1);
+  }
+  .textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono); font-size: 12px; }
+  .select { appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239AA3B8' stroke-width='2'><path d='m6 9 6 6 6-6'/></svg>");
+    background-repeat: no-repeat; background-position: right 14px center;
+  }
+
+  /* 规则类型切换 */
+  .rule-types {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+  }
+  .rule-type {
+    padding: 10px;
+    border-radius: 8px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid transparent;
+  }
+  .rule-type.active {
+    background: var(--c-cyan-soft);
+    border-color: var(--c-cyan);
+  }
+  .rule-type .rt-name { font-size: 12px; font-weight: 500; color: #C7CEDD; }
+  .rule-type.active .rt-name { color: var(--c-cyan); }
+  .rule-type .rt-desc { font-size: 10px; color: #64748B; margin-top: 3px; }
+
+  /* cron 表达式构建器 */
+  .cron-builder {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+  .cron-field {
+    display: flex; flex-direction: column;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+  }
+  .cron-field .clbl {
+    font-family: var(--font-mono); font-size: 9px;
+    color: var(--c-cyan); text-transform: uppercase;
+    letter-spacing: 0.15em; margin-bottom: 6px;
+  }
+  .cron-field input {
+    background: transparent; border: 0; outline: 0;
+    color: #E8ECF4; font-family: var(--font-mono); font-size: 14px;
+    text-align: center;
+  }
+  .cron-preview {
+    margin-top: 12px;
+    padding: 10px 14px;
+    background: rgba(79, 209, 224, 0.05);
+    border: 1px solid var(--c-cyan-soft);
+    border-radius: 8px;
+    font-size: 12px; color: var(--c-cyan);
+    font-family: var(--font-mono);
+  }
+  .cron-preview .when { color: #9AA3B8; }
+
+  /* 包名输入带建议 */
+  .pkg-input-wrap { position: relative; }
+  .pkg-suggestions {
+    position: absolute; top: calc(100% + 4px); left: 0; right: 0;
+    background: var(--bg-base);
+    border: 1px solid var(--glass-border-strong);
+    border-radius: 10px;
+    padding: 4px; z-index: 10;
+    box-shadow: var(--shadow-hover);
+  }
+  .pkg-sug {
+    padding: 8px 12px; border-radius: 6px;
+    cursor: pointer; transition: background 0.15s;
+    font-size: 13px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .pkg-sug:hover { background: var(--c-cyan-soft); }
+  .pkg-sug .lab { color: #E8ECF4; }
+  .pkg-sug .pn { font-family: var(--font-mono); font-size: 10px; color: #64748B; }
+
+  /* 选项开关 */
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+  }
+  .toggle-row .lbl-block .l1 { font-size: 13px; color: #E8ECF4; }
+  .toggle-row .lbl-block .l2 { font-size: 11px; color: #64748B; margin-top: 2px; }
+  .switch {
+    width: 38px; height: 22px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--glass-border);
+    position: relative; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .switch::after {
+    content: ""; position: absolute;
+    top: 2px; left: 2px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: #9AA3B8;
+    transition: all 0.25s;
+  }
+  .switch.on { background: var(--c-cyan-soft); border-color: var(--c-cyan); }
+  .switch.on::after { left: 18px; background: var(--c-cyan); box-shadow: 0 0 8px var(--c-cyan); }
+
+  /* 操作按钮 */
+  .form-actions {
+    display: flex; gap: 10px; justify-content: flex-end;
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--glass-border);
+  }
+  .btn {
+    padding: 11px 20px;
+    border-radius: 12px;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
+    border: 1px solid var(--glass-border);
+    background: var(--glass-bg);
+    color: #C7CEDD;
+  }
+  .btn:hover { background: var(--glass-bg-strong); }
+  .btn.primary {
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    color: #02030A; border-color: transparent;
+    box-shadow: 0 6px 20px rgba(79, 209, 224, 0.35);
+  }
+  .btn.primary:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(79, 209, 224, 0.45); }
+
+  /* 任务列表 */
+  .task-list {
+    margin-top: 18px;
+  }
+  .task-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 14px; align-items: center;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    transition: all 0.2s;
+  }
+  .task-item:hover { border-color: var(--glass-border-strong); }
+  .task-item.active { border-color: var(--c-cyan); background: rgba(79, 209, 224, 0.04); }
+  .task-toggle {
+    width: 36px; height: 20px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--glass-border);
+    position: relative; cursor: pointer; transition: all 0.2s;
+  }
+  .task-toggle::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #9AA3B8; transition: all 0.25s;
+  }
+  .task-toggle.on { background: var(--c-emerald); border-color: var(--c-emerald); }
+  .task-toggle.on::after { left: 19px; background: #02030A; }
+  .task-name { font-size: 13px; color: #E8ECF4; font-weight: 500; }
+  .task-name .meta { display: block; font-family: var(--font-mono); font-size: 10px; color: #64748B; margin-top: 2px; font-weight: 400; }
+  .task-cron { font-family: var(--font-mono); font-size: 11px; color: var(--c-cyan); }
+  .task-edit {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: rgba(255, 255, 255, 0.04); border: 1px solid var(--glass-border);
+    display: grid; place-items: center; cursor: pointer; color: #9AA3B8;
+    transition: all 0.2s;
+  }
+  .task-edit:hover { color: var(--c-cyan); border-color: var(--c-cyan); }
+
+  /* 响应式 */
+  @media (max-width: 1100px) {
+    .main-grid { grid-template-columns: 1fr; }
+    .dev-hero { grid-template-columns: 1fr; }
+    .radar-block { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div class="brand-name">Adb<span>Control</span></div>
+    </div>
+    <nav class="crumbs">
+      <span>Controller</span><span class="sep">/</span>
+      <span>Devices</span><span class="sep">/</span>
+      <span class="cur">device-a001</span>
+    </nav>
+    <div class="topbar-spacer"></div>
+    <button class="icon-btn" title="返回">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+    </button>
+    <div class="avatar" title="主控账户">CO</div>
+  </header>
+
+  <!-- 设备标题 -->
+  <section class="dev-hero">
+    <div class="dev-icon">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4FD1E0" stroke-width="1.6"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>
+    </div>
+    <div class="dev-info">
+      <div class="dev-name">
+        儿子的平板
+        <span class="pill"><span class="dot"></span>在线 · 2s ago</span>
+      </div>
+      <div class="dev-sub">device-a001 · o8cc1111@device-a001 · Android 14 · App v1.2.3</div>
+    </div>
+    <div class="dev-quick">
+      <button class="quick-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        截屏
+      </button>
+      <button class="quick-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        任务
+      </button>
+      <button class="quick-btn primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 5 5L20 7"/></svg>
+        远控
+      </button>
+      <button class="quick-btn danger">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        锁屏
+      </button>
+    </div>
+  </section>
+
+  <!-- 主区 -->
+  <div class="main-grid">
+
+    <!-- 左:遥测 -->
+    <main>
+      <div class="section-head">
+        <div class="section-title">遥测</div>
+        <div class="tab-row">
+          <span class="tab active">实时</span>
+          <span class="tab">历史</span>
+          <span class="tab">活动</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <!-- 状态网格 -->
+        <div class="stat-grid">
+          <div class="stat-cell">
+            <div class="lbl"><span class="ico">⚡</span>电量</div>
+            <div class="val">82% <span class="sub">充电中</span></div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl"><span class="ico">📡</span>网络</div>
+            <div class="val">WiFi <span class="sub">-52dBm</span></div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl"><span class="ico">🖥</span>屏幕</div>
+            <div class="val">亮屏 <span class="sub">3m 12s</span></div>
+          </div>
+          <div class="stat-cell">
+            <div class="lbl"><span class="ico">📍</span>前台</div>
+            <div class="val">微信</div>
+          </div>
+        </div>
+
+        <!-- 能力雷达 -->
+        <div class="radar-block">
+          <div class="radar-big">
+            <svg viewBox="0 0 240 240">
+              <defs>
+                <radialGradient id="rg2" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#4FD1E0" stop-opacity="0.4"/>
+                  <stop offset="100%" stop-color="#FF5FAD" stop-opacity="0.15"/>
+                </radialGradient>
+              </defs>
+              <g stroke="rgba(255,255,255,0.08)" fill="none">
+                <polygon points="120,30 198,75 198,165 120,210 42,165 42,75"/>
+                <polygon points="120,60 174,90 174,150 120,180 66,150 66,90"/>
+                <polygon points="120,90 150,105 150,135 120,150 90,135 90,105"/>
+                <polygon points="120,120 126,123 126,128 120,135 114,128 114,123"/>
+              </g>
+              <g stroke="rgba(255,255,255,0.06)">
+                <line x1="120" y1="30" x2="120" y2="210"/>
+                <line x1="198" y1="75" x2="42" y2="165"/>
+                <line x1="198" y1="165" x2="42" y2="75"/>
+              </g>
+              <polygon points="120,38 188,80 184,158 120,202 50,160 48,82"
+                       fill="url(#rg2)" stroke="#4FD1E0" stroke-width="2"/>
+              <g fill="#4FD1E0">
+                <circle cx="120" cy="38" r="4"/><circle cx="188" cy="80" r="4"/>
+                <circle cx="184" cy="158" r="4"/><circle cx="120" cy="202" r="4"/>
+                <circle cx="50" cy="160" r="4"/><circle cx="48" cy="82" r="4"/>
+              </g>
+              <g fill="#9AA3B8" font-family="JetBrains Mono" font-size="10" text-anchor="middle">
+                <text x="120" y="20">MQTT</text>
+                <text x="210" y="75">SHIZUKU</text>
+                <text x="210" y="170">ACCESS</text>
+                <text x="120" y="228">ADMIN</text>
+                <text x="30" y="170">USAGE</text>
+                <text x="30" y="75">NOTI</text>
+              </g>
+            </svg>
+          </div>
+          <div class="cap-list">
+            <div class="cap-row">
+              <span class="name"><span class="ic">⚡</span>Shizuku</span>
+              <span class="badge on">CONNECTED</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">⊥</span>Root</span>
+              <span class="badge off">N/A</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">◉</span>无障碍</span>
+              <span class="badge on">ENABLED</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">▣</span>DeviceAdmin</span>
+              <span class="badge on">ACTIVE</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">▤</span>UsageStats</span>
+              <span class="badge on">GRANTED</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">⊟</span>通知监听</span>
+              <span class="badge on">GRANTED</span>
+            </div>
+            <div class="cap-row">
+              <span class="name"><span class="ic">⚡</span>电池白名单</span>
+              <span class="badge on">WHITELISTED</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 应用使用排行 -->
+        <div class="usage-list">
+          <div class="section-head" style="margin-bottom: 12px;">
+            <div style="font-family: var(--font-display); font-size: 14px; font-weight: 600;">今日应用使用</div>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: #64748B;">2026-08-20</span>
+          </div>
+          <div class="usage-item">
+            <div class="usage-rank">01</div>
+            <div class="usage-name">微信<span class="pkg">com.tencent.mm</span></div>
+            <div class="usage-bar"><div class="fill" style="width:90%"></div></div>
+            <div class="usage-time">2h 14m</div>
+          </div>
+          <div class="usage-item">
+            <div class="usage-rank">02</div>
+            <div class="usage-name">抖音<span class="pkg">com.ss.android.ugc.aweme</span></div>
+            <div class="usage-bar"><div class="fill" style="width:45%"></div></div>
+            <div class="usage-time">1h 07m</div>
+          </div>
+          <div class="usage-item">
+            <div class="usage-rank">03</div>
+            <div class="usage-name">学习强国<span class="pkg">com.ss.android.study</span></div>
+            <div class="usage-bar"><div class="fill" style="width:28%"></div></div>
+            <div class="usage-time">42m</div>
+          </div>
+          <div class="usage-item">
+            <div class="usage-rank">04</div>
+            <div class="usage-name">哔哩哔哩<span class="pkg">tv.danmaku.bili</span></div>
+            <div class="usage-bar"><div class="fill" style="width:18%"></div></div>
+            <div class="usage-time">28m</div>
+          </div>
+          <div class="usage-item">
+            <div class="usage-rank">05</div>
+            <div class="usage-name">设置<span class="pkg">com.android.settings</span></div>
+            <div class="usage-bar"><div class="fill" style="width:6%"></div></div>
+            <div class="usage-time">9m</div>
+          </div>
+        </div>
+
+        <!-- 位置 -->
+        <div class="loc-block">
+          <div>
+            <div class="lbl" style="font-size:10px; color:#64748B; text-transform:uppercase; letter-spacing:0.12em; margin-bottom:8px;">最后位置</div>
+            <div class="loc-coord">
+              <div><span class="k">lat</span>  31.2304° N</div>
+              <div><span class="k">lng</span> 121.4737° E</div>
+              <div><span class="k">acc</span> 20m</div>
+              <div><span class="k">upd</span> 14:31:08</div>
+            </div>
+          </div>
+          <div class="map-mock">
+            <div class="pin"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 右:任务编辑 + 列表 -->
+    <aside>
+      <div class="section-head">
+        <div class="section-title">任务调度</div>
+        <span style="font-family: var(--font-mono); font-size: 11px; color: #64748B;">+ NEW</span>
+      </div>
+
+      <div class="form-block">
+        <div class="form-title">新建 / 编辑任务</div>
+        <div class="form-desc">配置 cron 规则与命令,主控端到点下发,被控端按可用执行路径分派</div>
+
+        <!-- 规则类型 -->
+        <div class="field">
+          <div class="field-label">规则类型</div>
+          <div class="rule-types">
+            <div class="rule-type active">
+              <div class="rt-name">时间窗口</div>
+              <div class="rt-desc">起止 cron 配对</div>
+            </div>
+            <div class="rule-type">
+              <div class="rt-name">累计限制</div>
+              <div class="rt-desc">超阈值触发</div>
+            </div>
+            <div class="rule-type">
+              <div class="rt-name">一次性</div>
+              <div class="rt-desc">精确时刻</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 包名 -->
+        <div class="field">
+          <div class="field-label">
+            目标应用
+            <span class="req">必填</span>
+          </div>
+          <div class="pkg-input-wrap">
+            <input class="input mono" value="com.tencent.mm" placeholder="com.xxx" />
+            <div class="pkg-suggestions" style="display:none;">
+              <div class="pkg-sug"><span class="lab">微信</span><span class="pn">com.tencent.mm</span></div>
+              <div class="pkg-sug"><span class="lab">抖音</span><span class="pn">com.ss.android.ugc.aweme</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- cron 构建器 -->
+        <div class="field">
+          <div class="field-label">
+            Cron 表达式(开始)
+            <span style="font-family:var(--font-mono); font-size:10px; color:var(--c-cyan);">9 21 * * 1-5</span>
+          </div>
+          <div class="cron-builder">
+            <div class="cron-field">
+              <div class="clbl">MIN</div>
+              <input value="9" />
+            </div>
+            <div class="cron-field">
+              <div class="clbl">HOUR</div>
+              <input value="21" />
+            </div>
+            <div class="cron-field">
+              <div class="clbl">DAY</div>
+              <input value="*" />
+            </div>
+            <div class="cron-field">
+              <div class="clbl">MON</div>
+              <input value="*" />
+            </div>
+            <div class="cron-field">
+              <div class="clbl">WEEK</div>
+              <input value="1-5" />
+            </div>
+          </div>
+          <div class="cron-preview">
+            <span class="when">下次触发:</span> 2026-08-21 21:09:00(周一)
+          </div>
+        </div>
+
+        <!-- 命令 -->
+        <div class="field">
+          <div class="field-label">下发命令</div>
+          <select class="select">
+            <option>APP_TIME · SUSPEND</option>
+            <option>APP_TIME · UNSUSPEND</option>
+            <option>NOTIFICATION · 推送提醒</option>
+            <option>SCREENSHOT · 截屏</option>
+            <option>LOCK · 锁屏</option>
+            <option>SHELL · 自定义</option>
+          </select>
+        </div>
+
+        <!-- 提醒提前 -->
+        <div class="field">
+          <div class="field-label">结束前提醒(分钟)</div>
+          <input class="input" type="number" value="10" placeholder="10" />
+        </div>
+
+        <!-- 执行路径偏好 -->
+        <div class="field">
+          <div class="field-label">执行路径偏好</div>
+          <div class="toggle-row">
+            <div class="lbl-block">
+              <div class="l1">优先 Shizuku</div>
+              <div class="l2">无 root 也能拿 shell 权限</div>
+            </div>
+            <div class="switch on"></div>
+          </div>
+          <div class="toggle-row">
+            <div class="lbl-block">
+              <div class="l1">允许无障碍兜底</div>
+              <div class="l2">Shizuku 不可用时切换无障碍</div>
+            </div>
+            <div class="switch on"></div>
+          </div>
+          <div class="toggle-row">
+            <div class="lbl-block">
+              <div class="l1">回报入库 MySQL</div>
+              <div class="l2">同步至远程汇总库</div>
+            </div>
+            <div class="switch on"></div>
+          </div>
+        </div>
+
+        <!-- 操作 -->
+        <div class="form-actions">
+          <button class="btn">取消</button>
+          <button class="btn">测试一次</button>
+          <button class="btn primary">保存并启用</button>
+        </div>
+      </div>
+
+      <!-- 任务列表 -->
+      <div class="task-list">
+        <div class="section-head" style="margin-top: 24px; margin-bottom: 12px;">
+          <div style="font-family: var(--font-display); font-size: 14px; font-weight: 600;">已有任务(4)</div>
+        </div>
+        <div class="task-item active">
+          <div class="task-toggle on"></div>
+          <div class="task-name">21:09 微信 SUSPEND<span class="meta">APP_TIME · pkg=com.tencent.mm</span></div>
+          <div class="task-cron">9 21 * * 1-5</div>
+          <div class="task-edit">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </div>
+        </div>
+        <div class="task-item">
+          <div class="task-toggle on"></div>
+          <div class="task-name">06:00 微信 UNSUSPEND<span class="meta">APP_TIME · pkg=com.tencent.mm</span></div>
+          <div class="task-cron">0 6 * * 1-5</div>
+          <div class="task-edit">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </div>
+        </div>
+        <div class="task-item">
+          <div class="task-toggle on"></div>
+          <div class="task-name">20:59 提醒 · 还剩 10 分钟<span class="meta">REMINDER · pkg=com.tencent.mm</span></div>
+          <div class="task-cron">59 20 * * 1-5</div>
+          <div class="task-edit">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </div>
+        </div>
+        <div class="task-item">
+          <div class="task-toggle"></div>
+          <div class="task-name">整点上报使用时长<span class="meta">USAGE · 错峰 +12min</span></div>
+          <div class="task-cron">12 * * * *</div>
+          <div class="task-edit">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+</body>
+</html>

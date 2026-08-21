@@ -1,0 +1,1057 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AdbControlApp · Dashboard Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ===== AdbControlApp UI · 玻璃拟态设计令牌 ===== */
+  :root {
+    /* 背景层 */
+    --bg-base: #060812;
+    --bg-deep: #02030A;
+    /* 玻璃面 */
+    --glass-bg: rgba(255, 255, 255, 0.045);
+    --glass-bg-strong: rgba(255, 255, 255, 0.075);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-strong: rgba(255, 255, 255, 0.14);
+    --glass-hl: rgba(255, 255, 255, 0.22);
+    /* 强调色 */
+    --c-cyan: #4FD1E0;
+    --c-cyan-soft: rgba(79, 209, 224, 0.18);
+    --c-magenta: #FF5FAD;
+    --c-magenta-soft: rgba(255, 95, 173, 0.18);
+    --c-emerald: #4ADE80;
+    --c-amber: #FBBF24;
+    --c-rose: #FF6B6B;
+    --c-slate: #64748B;
+    /* 字体 */
+    --font-display: 'Bricolage Grotesque', sans-serif;
+    --font-body: 'Manrope', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    /* 阴影 */
+    --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --shadow-hover: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--glass-border-strong), inset 0 1px 0 var(--glass-hl);
+    /* 半径 */
+    --r-sm: 10px;
+    --r-md: 16px;
+    --r-lg: 24px;
+    --r-xl: 32px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--bg-base);
+    color: #E8ECF4;
+    font-family: var(--font-body);
+    font-feature-settings: "ss01", "cv11";
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ====== 氛围背景:渐变光晕 + 噪点 ====== */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -20vmax;
+    background:
+      radial-gradient(40vmax 40vmax at 12% 18%, rgba(79, 209, 224, 0.22), transparent 60%),
+      radial-gradient(50vmax 50vmax at 88% 8%, rgba(255, 95, 173, 0.22), transparent 60%),
+      radial-gradient(60vmax 60vmax at 50% 110%, rgba(120, 100, 255, 0.18), transparent 60%),
+      linear-gradient(180deg, var(--bg-deep), var(--bg-base));
+    z-index: -2;
+    filter: blur(8px);
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.4;
+    pointer-events: none;
+    z-index: -1;
+    mix-blend-mode: overlay;
+  }
+
+  /* ====== App 整体布局 ====== */
+  .app {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 24px clamp(20px, 4vw, 56px) 80px;
+  }
+
+  /* ====== 顶部导航栏 ====== */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding: 14px 22px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-soft);
+    position: sticky;
+    top: 16px;
+    z-index: 50;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand-mark {
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    box-shadow: 0 6px 20px rgba(79, 209, 224, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    display: grid; place-items: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    color: #02030A;
+    font-size: 18px;
+    letter-spacing: -0.02em;
+  }
+  .brand-name {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: -0.02em;
+  }
+  .brand-name span { color: var(--c-cyan); }
+
+  .crumbs {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: #9AA3B8;
+    margin-left: 12px;
+  }
+  .crumbs .sep { opacity: 0.4; }
+  .crumbs .cur { color: #E8ECF4; font-weight: 500; }
+
+  .topbar-spacer { flex: 1; }
+
+  .search {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    min-width: 280px;
+    color: #9AA3B8;
+    font-size: 13px;
+    transition: all 0.2s;
+  }
+  .search:focus-within { border-color: var(--c-cyan); background: rgba(79, 209, 224, 0.06); }
+  .search input {
+    background: transparent; border: 0; outline: 0; color: inherit;
+    font-family: inherit; font-size: inherit; flex: 1;
+  }
+  .kbd {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 2px 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--glass-border);
+    border-radius: 4px; color: #9AA3B8;
+  }
+
+  .icon-btn {
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    display: grid; place-items: center;
+    cursor: pointer; color: #C7CEDD;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .icon-btn:hover { background: var(--glass-bg-strong); transform: translateY(-1px); }
+  .icon-btn .dot {
+    position: absolute; top: 8px; right: 8px;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--c-magenta);
+    box-shadow: 0 0 8px var(--c-magenta);
+  }
+  .avatar {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--c-magenta), var(--c-cyan));
+    display: grid; place-items: center;
+    font-weight: 600; font-size: 14px;
+    color: #02030A;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(255, 95, 173, 0.3);
+  }
+
+  /* ====== Hero 区 ====== */
+  .hero {
+    margin-top: 32px;
+    padding: 36px 40px;
+    border-radius: var(--r-xl);
+    background: var(--glass-bg);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 40px;
+    align-items: center;
+  }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: url("./assets/dashboard-hero.jpg") center/cover no-repeat;
+    opacity: 0.32;
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+  .hero::after {
+    content: "";
+    position: absolute;
+    top: -30%; right: -10%;
+    width: 50%; height: 160%;
+    background: radial-gradient(circle, var(--c-cyan-soft), transparent 60%);
+    pointer-events: none;
+  }
+  .hero-text { position: relative; z-index: 2; }
+  .hero-eyebrow {
+    font-family: var(--font-mono); font-size: 11px;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--c-cyan); margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .hero-eyebrow::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--c-emerald); box-shadow: 0 0 12px var(--c-emerald);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .hero-title {
+    font-family: var(--font-display);
+    font-size: clamp(36px, 4.5vw, 56px);
+    font-weight: 600;
+    line-height: 1.02;
+    letter-spacing: -0.04em;
+    margin-bottom: 14px;
+  }
+  .hero-title em {
+    font-style: normal;
+    background: linear-gradient(120deg, var(--c-cyan), var(--c-magenta));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .hero-sub {
+    color: #9AA3B8;
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 480px;
+  }
+  .hero-stats {
+    display: flex; gap: 36px;
+    margin-top: 28px;
+  }
+  .hero-stat .num {
+    font-family: var(--font-display);
+    font-size: 28px; font-weight: 600;
+    letter-spacing: -0.03em;
+  }
+  .hero-stat .num.ok { color: var(--c-emerald); }
+  .hero-stat .num.warn { color: var(--c-amber); }
+  .hero-stat .lbl {
+    font-size: 11px; color: #64748B;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    margin-top: 4px;
+  }
+
+  /* 能力雷达 mini */
+  .radar-mini {
+    position: relative;
+    width: 180px; height: 180px;
+    z-index: 2;
+  }
+  .radar-mini svg { width: 100%; height: 100%; }
+
+  /* ====== 概览统计三卡 ====== */
+  .stats-row {
+    margin-top: 24px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 18px;
+  }
+  .stat-card {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+    position: relative; overflow: hidden;
+    transition: transform 0.25s, box-shadow 0.25s;
+  }
+  .stat-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-hover); }
+  .stat-card .glow {
+    position: absolute; top: -40%; right: -20%;
+    width: 80%; height: 100%;
+    border-radius: 50%; filter: blur(40px);
+    opacity: 0.35;
+  }
+  .stat-card.cyan .glow { background: var(--c-cyan); }
+  .stat-card.magenta .glow { background: var(--c-magenta); }
+  .stat-card.emerald .glow { background: var(--c-emerald); }
+  .stat-card.amber .glow { background: var(--c-amber); }
+  .stat-card .head {
+    display: flex; align-items: center; gap: 10px;
+    color: #9AA3B8; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 18px;
+  }
+  .stat-card .head .ico {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    display: grid; place-items: center;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--glass-border);
+  }
+  .stat-card .val {
+    font-family: var(--font-display);
+    font-size: 36px; font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+  }
+  .stat-card .unit { font-size: 16px; color: #9AA3B8; margin-left: 4px; }
+  .stat-card .delta {
+    margin-top: 10px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .delta.up { color: var(--c-emerald); }
+  .delta.down { color: var(--c-rose); }
+
+  /* 迷你 sparkline */
+  .spark {
+    margin-top: 12px;
+    height: 32px; width: 100%;
+  }
+
+  /* ====== 主区:左设备列表 + 右侧栏 ====== */
+  .main-grid {
+    margin-top: 36px;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .section-title {
+    font-family: var(--font-display);
+    font-size: 20px; font-weight: 600;
+    letter-spacing: -0.02em;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .section-title .count {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 3px 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    color: #9AA3B8;
+  }
+  .filter-chips {
+    display: flex; gap: 8px;
+  }
+  .chip {
+    font-size: 12px; padding: 6px 12px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    color: #9AA3B8;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .chip:hover { color: #E8ECF4; border-color: var(--glass-border-strong); }
+  .chip.active {
+    background: var(--c-cyan-soft);
+    border-color: var(--c-cyan);
+    color: var(--c-cyan);
+  }
+
+  /* 设备卡片 */
+  .device-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  .device-card {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+    cursor: pointer;
+    transition: all 0.25s;
+    position: relative; overflow: hidden;
+  }
+  .device-card:hover {
+    transform: translateY(-3px);
+    border-color: var(--glass-border-strong);
+    box-shadow: var(--shadow-hover);
+  }
+  .device-card .topbar-d {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 16px;
+  }
+  .device-id-block .name {
+    font-family: var(--font-display);
+    font-size: 17px; font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+  }
+  .device-id-block .id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #64748B;
+  }
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.3);
+    color: var(--c-emerald);
+    font-size: 11px; font-weight: 500;
+  }
+  .status-pill.offline {
+    background: rgba(100, 116, 139, 0.12);
+    border-color: rgba(100, 116, 139, 0.3);
+    color: #9AA3B8;
+  }
+  .status-pill.warn {
+    background: rgba(251, 191, 36, 0.12);
+    border-color: rgba(251, 191, 36, 0.3);
+    color: var(--c-amber);
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+  .status-pill.offline .status-dot { box-shadow: none; }
+
+  .device-meta {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .meta-item .lbl {
+    font-size: 10px;
+    color: #64748B;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    margin-bottom: 4px;
+  }
+  .meta-item .val {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: #C7CEDD;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  /* 能力条 */
+  .capabilities {
+    display: flex; gap: 6px;
+    margin-bottom: 14px;
+  }
+  .cap {
+    flex: 1;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    position: relative;
+    overflow: hidden;
+  }
+  .cap::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(90deg, var(--c-cyan), var(--c-magenta));
+    transform-origin: left;
+    transform: scaleX(var(--lv, 0));
+  }
+  .cap.on::after { background: var(--c-emerald); }
+  .cap.off::after { background: rgba(100, 116, 139, 0.3); transform: scaleX(0.3); }
+
+  .device-foot {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-top: 14px;
+    border-top: 1px solid var(--glass-border);
+    font-size: 11px; color: #64748B;
+  }
+  .device-foot .actions {
+    display: flex; gap: 6px;
+  }
+  .mini-btn {
+    padding: 4px 8px; border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--glass-border);
+    color: #C7CEDD;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .mini-btn:hover { background: var(--c-cyan-soft); border-color: var(--c-cyan); color: var(--c-cyan); }
+
+  /* 添加设备虚线卡 */
+  .add-card {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: transparent;
+    border: 1.5px dashed var(--glass-border-strong);
+    cursor: pointer;
+    display: grid; place-items: center;
+    color: #9AA3B8;
+    transition: all 0.2s;
+    min-height: 200px;
+  }
+  .add-card:hover {
+    background: rgba(79, 209, 224, 0.04);
+    border-color: var(--c-cyan);
+    color: var(--c-cyan);
+  }
+  .add-card .plus {
+    width: 40px; height: 40px; border-radius: 12px;
+    border: 1px solid var(--glass-border-strong);
+    display: grid; place-items: center;
+    font-size: 22px; margin-bottom: 8px;
+    font-family: var(--font-display);
+  }
+
+  /* ====== 右侧栏:任务流 + 警报 ====== */
+  .sidebar {
+    display: flex; flex-direction: column;
+    gap: 18px;
+    position: sticky; top: 100px;
+  }
+  .panel {
+    padding: 20px;
+    border-radius: var(--r-lg);
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow-soft);
+  }
+  .panel-title {
+    font-family: var(--font-display);
+    font-size: 14px; font-weight: 600;
+    letter-spacing: -0.01em;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .panel-title .more {
+    font-family: var(--font-mono);
+    font-size: 11px; color: #64748B; cursor: pointer;
+  }
+
+  /* 任务流时间线 */
+  .timeline { position: relative; }
+  .tl-item {
+    display: grid;
+    grid-template-columns: 56px 1fr;
+    gap: 14px;
+    padding-bottom: 18px;
+    position: relative;
+  }
+  .tl-item:not(:last-child)::after {
+    content: ""; position: absolute;
+    left: 56px; top: 22px; bottom: 0;
+    width: 1px;
+    background: linear-gradient(180deg, var(--glass-border), transparent);
+  }
+  .tl-time {
+    font-family: var(--font-mono);
+    font-size: 11px; color: #64748B;
+    padding-top: 2px;
+  }
+  .tl-body { font-size: 13px; }
+  .tl-body .who { color: var(--c-cyan); font-weight: 500; }
+  .tl-body .what { color: #C7CEDD; }
+  .tl-body .res {
+    display: inline-flex; align-items: center; gap: 4px;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px; color: #64748B;
+  }
+  .tl-body .res.ok { color: var(--c-emerald); }
+  .tl-body .res.err { color: var(--c-rose); }
+
+  /* 警报条 */
+  .alert-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.2);
+    margin-bottom: 8px;
+    font-size: 12px;
+  }
+  .alert-row.warn {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.2);
+  }
+  .alert-row .ico { color: var(--c-rose); flex-shrink: 0; }
+  .alert-row.warn .ico { color: var(--c-amber); }
+  .alert-row .txt { color: #C7CEDD; flex: 1; }
+  .alert-row .when { font-family: var(--font-mono); font-size: 10px; color: #64748B; }
+
+  /* 容量计 */
+  .meter {
+    margin-top: 12px;
+  }
+  .meter-row {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: #9AA3B8;
+    margin-bottom: 6px;
+  }
+  .meter-bar {
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .meter-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--c-cyan), var(--c-magenta));
+    border-radius: 3px;
+  }
+  .meter-fill.warn { background: linear-gradient(90deg, var(--c-amber), var(--c-rose)); }
+  .meter-row .val { font-family: var(--font-mono); color: #C7CEDD; }
+
+  /* 响应式 */
+  @media (max-width: 1100px) {
+    .main-grid { grid-template-columns: 1fr; }
+    .stats-row { grid-template-columns: repeat(2, 1fr); }
+    .device-grid { grid-template-columns: 1fr; }
+    .hero { grid-template-columns: 1fr; }
+    .radar-mini { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ========== 顶部导航栏 ========== -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div class="brand-name">Adb<span>Control</span></div>
+    </div>
+    <nav class="crumbs">
+      <span>Controller</span>
+      <span class="sep">/</span>
+      <span class="cur">Dashboard</span>
+    </nav>
+
+    <div class="topbar-spacer"></div>
+
+    <label class="search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg>
+      <input placeholder="搜索设备 / 任务 / 包名…" />
+      <span class="kbd">⌘K</span>
+    </label>
+
+    <button class="icon-btn" title="通知">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      <span class="dot"></span>
+    </button>
+    <button class="icon-btn" title="设置">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+    <div class="avatar" title="主控账户">CO</div>
+  </header>
+
+  <!-- ========== Hero ========== -->
+  <section class="hero">
+    <div class="hero-text">
+      <div class="hero-eyebrow">Live · 23 devices reporting</div>
+      <h1 class="hero-title">舰队就在你<em>视线之内</em></h1>
+      <p class="hero-sub">通过 EMQX Cloud 实时遥测,所有被控端的状态、行为、健康一览无遗。Shizuku 桥接的命令路径让远控具备 root 级精度,而无需 root。</p>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <div class="num ok">22</div>
+          <div class="lbl">在线 / 23</div>
+        </div>
+        <div class="hero-stat">
+          <div class="num">1,284</div>
+          <div class="lbl">今日触发</div>
+        </div>
+        <div class="hero-stat">
+          <div class="num">99.2%</div>
+          <div class="lbl">成功率</div>
+        </div>
+        <div class="hero-stat">
+          <div class="num warn">3</div>
+          <div class="lbl">需关注</div>
+        </div>
+      </div>
+    </div>
+    <!-- 能力雷达 mini -->
+    <div class="radar-mini">
+      <svg viewBox="0 0 200 200">
+        <defs>
+          <radialGradient id="rgrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#4FD1E0" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#FF5FAD" stop-opacity="0.2"/>
+          </radialGradient>
+        </defs>
+        <!-- 网格 -->
+        <g stroke="rgba(255,255,255,0.08)" fill="none">
+          <polygon points="100,20 170,60 170,140 100,180 30,140 30,60"/>
+          <polygon points="100,40 152,70 152,130 100,160 48,130 48,70"/>
+          <polygon points="100,60 134,80 134,120 100,140 66,120 66,80"/>
+        </g>
+        <!-- 轴 -->
+        <g stroke="rgba(255,255,255,0.08)">
+          <line x1="100" y1="20" x2="100" y2="180"/>
+          <line x1="170" y1="60" x2="30" y2="140"/>
+          <line x1="170" y1="140" x2="30" y2="60"/>
+        </g>
+        <!-- 数据多边形 -->
+        <polygon points="100,30 160,68 158,135 100,170 38,132 40,72"
+                 fill="url(#rgrad)" stroke="#4FD1E0" stroke-width="1.5" opacity="0.85"/>
+        <!-- 顶点 -->
+        <g fill="#4FD1E0">
+          <circle cx="100" cy="30" r="3"/>
+          <circle cx="160" cy="68" r="3"/>
+          <circle cx="158" cy="135" r="3"/>
+          <circle cx="100" cy="170" r="3"/>
+          <circle cx="38" cy="132" r="3"/>
+          <circle cx="40" cy="72" r="3"/>
+        </g>
+        <!-- 标签 -->
+        <g fill="#9AA3B8" font-family="JetBrains Mono" font-size="9" text-anchor="middle">
+          <text x="100" y="12">MQTT</text>
+          <text x="180" y="58">SHIZUKU</text>
+          <text x="180" y="148">ACCESS</text>
+          <text x="100" y="195">ADMIN</text>
+          <text x="20" y="148">USAGE</text>
+          <text x="20" y="58">NOTI</text>
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ========== 统计四卡 ========== -->
+  <section class="stats-row">
+    <div class="stat-card cyan">
+      <div class="glow"></div>
+      <div class="head">
+        <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4FD1E0" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg></span>
+        在线设备
+      </div>
+      <div class="val">22<span class="unit">/ 23</span></div>
+      <div class="delta up">▲ 1 since last hour</div>
+      <svg class="spark" viewBox="0 0 200 32" preserveAspectRatio="none">
+        <polyline points="0,20 25,16 50,22 75,12 100,15 125,8 150,11 175,6 200,9"
+                  fill="none" stroke="#4FD1E0" stroke-width="1.5" opacity="0.7"/>
+      </svg>
+    </div>
+    <div class="stat-card magenta">
+      <div class="glow"></div>
+      <div class="head">
+        <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF5FAD" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span>
+        今日触发
+      </div>
+      <div class="val">1,284</div>
+      <div class="delta up">▲ 12.4% vs 昨天</div>
+      <svg class="spark" viewBox="0 0 200 32" preserveAspectRatio="none">
+        <polyline points="0,24 25,22 50,18 75,20 100,12 125,14 150,8 175,10 200,4"
+                  fill="none" stroke="#FF5FAD" stroke-width="1.5" opacity="0.7"/>
+      </svg>
+    </div>
+    <div class="stat-card emerald">
+      <div class="glow"></div>
+      <div class="head">
+        <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ADE80" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg></span>
+        执行成功率
+      </div>
+      <div class="val">99.2<span class="unit">%</span></div>
+      <div class="delta up">▲ 0.3% vs 7d avg</div>
+      <svg class="spark" viewBox="0 0 200 32" preserveAspectRatio="none">
+        <polyline points="0,12 25,10 50,14 75,8 100,11 125,6 150,9 175,5 200,7"
+                  fill="none" stroke="#4ADE80" stroke-width="1.5" opacity="0.7"/>
+      </svg>
+    </div>
+    <div class="stat-card amber">
+      <div class="glow"></div>
+      <div class="head">
+        <span class="ico"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FBBF24" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span>
+        待处理警报
+      </div>
+      <div class="val">3</div>
+      <div class="delta down">▼ 1 since 1h ago</div>
+      <svg class="spark" viewBox="0 0 200 32" preserveAspectRatio="none">
+        <polyline points="0,8 25,12 50,6 75,16 100,10 125,18 150,12 175,20 200,16"
+                  fill="none" stroke="#FBBF24" stroke-width="1.5" opacity="0.7"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ========== 主区:设备列表 + 侧栏 ========== -->
+  <div class="main-grid">
+
+    <!-- 左:设备列表 -->
+    <main>
+      <div class="section-head">
+        <div class="section-title">
+          被控设备
+          <span class="count">23 ACTIVE</span>
+        </div>
+        <div class="filter-chips">
+          <span class="chip active">全部</span>
+          <span class="chip">在线</span>
+          <span class="chip">异常</span>
+          <span class="chip">离线</span>
+        </div>
+      </div>
+
+      <div class="device-grid">
+
+        <!-- 设备卡 1 -->
+        <div class="device-card">
+          <div class="topbar-d">
+            <div class="device-id-block">
+              <div class="name">儿子的平板</div>
+              <div class="id">device-a001 · o8cc1111@device-a001</div>
+            </div>
+            <div class="status-pill"><span class="status-dot"></span>在线</div>
+          </div>
+          <div class="device-meta">
+            <div class="meta-item"><div class="lbl">电量</div><div class="val">82% ⚡</div></div>
+            <div class="meta-item"><div class="lbl">网络</div><div class="val">WiFi -52dBm</div></div>
+            <div class="meta-item"><div class="lbl">前台</div><div class="val">com.tencent.mm</div></div>
+          </div>
+          <div class="capabilities">
+            <div class="cap on" style="--lv:1" title="Shizuku"></div>
+            <div class="cap" style="--lv:0.2" title="Root"></div>
+            <div class="cap on" style="--lv:1" title="无障碍"></div>
+            <div class="cap on" style="--lv:1" title="DeviceAdmin"></div>
+            <div class="cap on" style="--lv:1" title="UsageStats"></div>
+            <div class="cap on" style="--lv:1" title="通知"></div>
+          </div>
+          <div class="device-foot">
+            <span>最后心跳 · 2s ago</span>
+            <div class="actions">
+              <button class="mini-btn">截屏</button>
+              <button class="mini-btn">详情</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 设备卡 2 -->
+        <div class="device-card">
+          <div class="topbar-d">
+            <div class="device-id-block">
+              <div class="name">客厅电视盒</div>
+              <div class="id">device-a002 · o8cc1111@device-a002</div>
+            </div>
+            <div class="status-pill warn"><span class="status-dot"></span>需授权</div>
+          </div>
+          <div class="device-meta">
+            <div class="meta-item"><div class="lbl">电量</div><div class="val">— 电源</div></div>
+            <div class="meta-item"><div class="lbl">网络</div><div class="val">WiFi -68dBm</div></div>
+            <div class="meta-item"><div class="lbl">前台</div><div class="val">com.android.tv</div></div>
+          </div>
+          <div class="capabilities">
+            <div class="cap off" style="--lv:0" title="Shizuku 未授权"></div>
+            <div class="cap off" style="--lv:0" title="Root"></div>
+            <div class="cap on" style="--lv:1" title="无障碍"></div>
+            <div class="cap on" style="--lv:1" title="DeviceAdmin"></div>
+            <div class="cap off" style="--lv:0" title="UsageStats 未授权"></div>
+            <div class="cap on" style="--lv:1" title="通知"></div>
+          </div>
+          <div class="device-foot">
+            <span>最后心跳 · 14s ago</span>
+            <div class="actions">
+              <button class="mini-btn">授权</button>
+              <button class="mini-btn">详情</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 设备卡 3 -->
+        <div class="device-card">
+          <div class="topbar-d">
+            <div class="device-id-block">
+              <div class="name">学习机 A</div>
+              <div class="id">device-a003 · o8cc1111@device-a003</div>
+            </div>
+            <div class="status-pill"><span class="status-dot"></span>在线</div>
+          </div>
+          <div class="device-meta">
+            <div class="meta-item"><div class="lbl">电量</div><div class="val">96%</div></div>
+            <div class="meta-item"><div class="lbl">网络</div><div class="val">5G -84dBm</div></div>
+            <div class="meta-item"><div class="lbl">前台</div><div class="val">com.study.app</div></div>
+          </div>
+          <div class="capabilities">
+            <div class="cap on" style="--lv:1"></div>
+            <div class="cap on" style="--lv:1"></div>
+            <div class="cap on" style="--lv:1"></div>
+            <div class="cap on" style="--lv:1"></div>
+            <div class="cap on" style="--lv:1"></div>
+            <div class="cap on" style="--lv:1"></div>
+          </div>
+          <div class="device-foot">
+            <span>最后心跳 · 1s ago</span>
+            <div class="actions">
+              <button class="mini-btn">截屏</button>
+              <button class="mini-btn">详情</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 设备卡 4:离线 -->
+        <div class="device-card">
+          <div class="topbar-d">
+            <div class="device-id-block">
+              <div class="name">备用机 B</div>
+              <div class="id">device-a004 · o8cc1111@device-a004</div>
+            </div>
+            <div class="status-pill offline"><span class="status-dot"></span>离线</div>
+          </div>
+          <div class="device-meta">
+            <div class="meta-item"><div class="lbl">电量</div><div class="val">— —</div></div>
+            <div class="meta-item"><div class="lbl">网络</div><div class="val">— —</div></div>
+            <div class="meta-item"><div class="lbl">最后在线</div><div class="val">2h ago</div></div>
+          </div>
+          <div class="capabilities">
+            <div class="cap off" style="--lv:0"></div>
+            <div class="cap off" style="--lv:0"></div>
+            <div class="cap off" style="--lv:0"></div>
+            <div class="cap off" style="--lv:0"></div>
+            <div class="cap off" style="--lv:0"></div>
+            <div class="cap off" style="--lv:0"></div>
+          </div>
+          <div class="device-foot">
+            <span>LWT · device/offline/a004</span>
+            <div class="actions">
+              <button class="mini-btn">唤起</button>
+              <button class="mini-btn">详情</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 添加设备卡 -->
+        <div class="add-card" title="配对新设备">
+          <div class="plus">+</div>
+          <div>配对新设备</div>
+          <div style="font-size:11px;margin-top:4px;">扫 QR · 上限 23 台</div>
+        </div>
+
+      </div>
+    </main>
+
+    <!-- 右:侧栏 -->
+    <aside class="sidebar">
+
+      <!-- 任务流 -->
+      <div class="panel">
+        <div class="panel-title">
+          实时任务流
+          <span class="more">查看全部 →</span>
+        </div>
+        <div class="timeline">
+          <div class="tl-item">
+            <div class="tl-time">14:32</div>
+            <div class="tl-body">
+              <span class="who">device-a001</span>
+              <span class="what">执行 APP_TIME UNSUSPEND 微信</span>
+              <div class="res ok">✓ 成功 · 240ms · shizuku</div>
+            </div>
+          </div>
+          <div class="tl-item">
+            <div class="tl-time">14:30</div>
+            <div class="tl-body">
+              <span class="who">device-a003</span>
+              <span class="what">截屏上传 R2</span>
+              <div class="res ok">✓ slss-boby/screenshots/a003/...</div>
+            </div>
+          </div>
+          <div class="tl-item">
+            <div class="tl-time">14:28</div>
+            <div class="tl-body">
+              <span class="who">device-a002</span>
+              <span class="what">授权 Shizuku 失败</span>
+              <div class="res err">✗ NO_PATH · 待用户授权</div>
+            </div>
+          </div>
+          <div class="tl-item">
+            <div class="tl-time">14:25</div>
+            <div class="tl-body">
+              <span class="who">device-a001</span>
+              <span class="what">USAGE 整点上报(错峰 +12min)</span>
+              <div class="res ok">✓ 微信 47min · 抖音 23min</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 警报 -->
+      <div class="panel">
+        <div class="panel-title">警报</div>
+        <div class="alert-row warn">
+          <span class="ico">⚠</span>
+          <span class="txt">device-a002 · Shizuku 未授权,部分命令将失败</span>
+          <span class="when">14:28</span>
+        </div>
+        <div class="alert-row">
+          <span class="ico">●</span>
+          <span class="txt">device-a004 · 离线超 2 小时</span>
+          <span class="when">12:30</span>
+        </div>
+        <div class="alert-row warn">
+          <span class="ico">⚠</span>
+          <span class="txt">EMQX 存储用量 412MB / 500MB</span>
+          <span class="when">14:00</span>
+        </div>
+      </div>
+
+      <!-- 容量计 -->
+      <div class="panel">
+        <div class="panel-title">容量监控</div>
+        <div class="meter">
+          <div class="meter-row"><span>EMQX 连接</span><span class="val">23 / 30</span></div>
+          <div class="meter-bar"><div class="meter-fill" style="width:76%"></div></div>
+          <div class="meter-row"><span>EMQX 存储</span><span class="val">412 / 500MB</span></div>
+          <div class="meter-bar"><div class="meter-fill warn" style="width:82%"></div></div>
+          <div class="meter-row"><span>EMQX 请求</span><span class="val">9.2k / 36k/h</span></div>
+          <div class="meter-bar"><div class="meter-fill" style="width:25%"></div></div>
+          <div class="meter-row"><span>R2 存储</span><span class="val">3.8 / 10GB</span></div>
+          <div class="meter-bar"><div class="meter-fill" style="width:38%"></div></div>
+        </div>
+      </div>
+
+    </aside>
+
+  </div>
+
+</div>
+</body>
+</html>

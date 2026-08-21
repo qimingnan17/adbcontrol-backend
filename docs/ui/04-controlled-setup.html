@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AdbControlApp · 被控端 配对/状态自检</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #060812; --bg-deep: #02030A;
+    --glass-bg: rgba(255, 255, 255, 0.045);
+    --glass-bg-strong: rgba(255, 255, 255, 0.075);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-border-strong: rgba(255, 255, 255, 0.14);
+    --glass-hl: rgba(255, 255, 255, 0.22);
+    --c-cyan: #4FD1E0; --c-cyan-soft: rgba(79, 209, 224, 0.18);
+    --c-magenta: #FF5FAD; --c-magenta-soft: rgba(255, 95, 173, 0.18);
+    --c-emerald: #4ADE80; --c-amber: #FBBF24;
+    --c-rose: #FF6B6B; --c-slate: #64748B;
+    --font-display: 'Bricolage Grotesque', sans-serif;
+    --font-body: 'Manrope', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --shadow-soft: 0 8px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --shadow-hover: 0 20px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--glass-border-strong), inset 0 1px 0 var(--glass-hl);
+    --r-sm: 10px; --r-md: 16px; --r-lg: 24px; --r-xl: 32px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg-base); color: #E8ECF4;
+    font-family: var(--font-body); min-height: 100vh;
+    overflow-x: hidden; -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: -20vmax;
+    background:
+      radial-gradient(40vmax 40vmax at 12% 18%, rgba(79, 209, 224, 0.20), transparent 60%),
+      radial-gradient(50vmax 50vmax at 88% 92%, rgba(255, 95, 173, 0.20), transparent 60%),
+      radial-gradient(60vmax 60vmax at 50% 50%, rgba(120, 100, 255, 0.10), transparent 60%),
+      linear-gradient(180deg, var(--bg-deep), var(--bg-base));
+    z-index: -2; filter: blur(8px);
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.05 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+    opacity: 0.4; pointer-events: none; z-index: -1; mix-blend-mode: overlay;
+  }
+
+  /* 移动端框架:模拟手机居中显示 */
+  .phone {
+    width: 100%; max-width: 420px;
+    margin: 24px auto 64px;
+    background: var(--glass-bg);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border: 1px solid var(--glass-border-strong);
+    border-radius: 40px;
+    box-shadow: var(--shadow-hover);
+    overflow: hidden;
+    position: relative;
+  }
+  .phone::before {
+    content: ""; position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    width: 120px; height: 26px;
+    background: #02030A;
+    border-radius: 0 0 16px 16px;
+    z-index: 10;
+  }
+
+  .screen {
+    padding: 56px 28px 36px;
+    min-height: 760px;
+  }
+
+  /* 顶部品牌 */
+  .head {
+    text-align: center;
+    margin-bottom: 32px;
+  }
+  .brand-mark {
+    width: 64px; height: 64px;
+    margin: 0 auto 14px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    box-shadow: 0 8px 28px rgba(79, 209, 224, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    display: grid; place-items: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    color: #02030A;
+    font-size: 28px;
+    letter-spacing: -0.04em;
+  }
+  .head .name {
+    font-family: var(--font-display);
+    font-size: 22px; font-weight: 600;
+    letter-spacing: -0.03em;
+    margin-bottom: 4px;
+  }
+  .head .name span { color: var(--c-cyan); }
+  .head .role {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--c-cyan);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+
+  /* Stepper 步骤指示 */
+  .stepper {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 32px;
+    position: relative;
+  }
+  .stepper::before {
+    content: ""; position: absolute;
+    top: 14px; left: 14px; right: 14px;
+    height: 2px;
+    background: var(--glass-border);
+    z-index: 0;
+  }
+  .step {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 8px;
+    flex: 1;
+    position: relative; z-index: 2;
+  }
+  .step-circle {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--bg-base);
+    border: 2px solid var(--glass-border);
+    display: grid; place-items: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #64748B;
+  }
+  .step.done .step-circle {
+    background: var(--c-emerald);
+    border-color: var(--c-emerald);
+    color: #02030A;
+  }
+  .step.cur .step-circle {
+    background: var(--c-cyan-soft);
+    border-color: var(--c-cyan);
+    color: var(--c-cyan);
+    box-shadow: 0 0 0 4px rgba(79, 209, 224, 0.1);
+  }
+  .step-label {
+    font-size: 10px;
+    color: #64748B;
+    text-align: center;
+  }
+  .step.done .step-label, .step.cur .step-label { color: #C7CEDD; }
+
+  /* 卡片通用 */
+  .card {
+    padding: 22px;
+    border-radius: var(--r-lg);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    margin-bottom: 14px;
+  }
+  .card-title {
+    font-family: var(--font-display);
+    font-size: 16px; font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 4px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title .badge-ok {
+    font-family: var(--font-mono); font-size: 10px;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--c-emerald);
+  }
+  .card-desc { font-size: 12px; color: #9AA3B8; margin-bottom: 18px; }
+
+  /* QR 大图 */
+  .qr-area {
+    width: 100%; aspect-ratio: 1 / 1;
+    max-width: 220px; margin: 0 auto 18px;
+    border-radius: var(--r-md);
+    background: #FFFFFF;
+    padding: 12px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+    position: relative;
+  }
+  .qr-area::after {
+    content: ""; position: absolute;
+    inset: -8px;
+    border-radius: var(--r-md);
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    z-index: -1;
+    filter: blur(20px);
+    opacity: 0.4;
+  }
+  .qr-grid {
+    width: 100%; height: 100%;
+    background:
+      linear-gradient(45deg, #000 25%, transparent 25%) 0 0 / 12px 12px,
+      linear-gradient(-45deg, #000 25%, transparent 25%) 0 0 / 12px 12px,
+      linear-gradient(45deg, transparent 75%, #000 75%) 0 0 / 12px 12px,
+      linear-gradient(-45deg, transparent 75%, #000 75%) 0 0 / 12px 12px,
+      #fff;
+    border-radius: 6px;
+    position: relative;
+  }
+  .qr-grid::before, .qr-grid::after, .qr-grid > .corner {
+    content: ""; position: absolute;
+    width: 36px; height: 36px;
+    background: #fff;
+    border: 8px solid #000;
+    border-radius: 4px;
+  }
+  .qr-grid::before { top: 0; left: 0; }
+  .qr-grid::after { top: 0; right: 0; }
+  .qr-grid > .corner { bottom: 0; left: 0; }
+
+  .qr-caption {
+    text-align: center;
+    font-size: 11px; color: #9AA3B8;
+    line-height: 1.6;
+    margin-bottom: 18px;
+  }
+  .qr-caption .em {
+    color: var(--c-cyan);
+    font-family: var(--font-mono);
+  }
+
+  /* 自检项 */
+  .check-row {
+    display: flex; align-items: flex-start;
+    gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px dashed var(--glass-border);
+  }
+  .check-row:last-child { border-bottom: 0; }
+  .check-ic {
+    width: 36px; height: 36px; flex-shrink: 0;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--glass-border);
+    display: grid; place-items: center;
+    position: relative;
+  }
+  .check-ic.ok { background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.3); color: var(--c-emerald); }
+  .check-ic.warn { background: rgba(251, 191, 36, 0.12); border-color: rgba(251, 191, 36, 0.3); color: var(--c-amber); }
+  .check-ic.err { background: rgba(255, 107, 107, 0.12); border-color: rgba(255, 107, 107, 0.3); color: var(--c-rose); }
+
+  .check-body { flex: 1; min-width: 0; }
+  .check-name {
+    font-size: 13px; font-weight: 500;
+    color: #E8ECF4;
+    margin-bottom: 2px;
+  }
+  .check-name .badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    margin-left: 6px;
+    font-family: var(--font-mono);
+    vertical-align: middle;
+  }
+  .check-name .badge.must { background: rgba(255, 95, 173, 0.15); color: var(--c-magenta); }
+  .check-name .badge.opt { background: rgba(100, 116, 139, 0.15); color: #9AA3B8; }
+  .check-desc {
+    font-size: 11px;
+    color: #9AA3B8;
+    line-height: 1.5;
+    margin-bottom: 8px;
+  }
+  .check-status {
+    font-family: var(--font-mono); font-size: 10px;
+    color: var(--c-emerald);
+    display: flex; align-items: center; gap: 6px;
+  }
+  .check-status.warn { color: var(--c-amber); }
+  .check-status.err { color: var(--c-rose); }
+  .check-action {
+    margin-top: 8px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    background: var(--c-cyan-soft);
+    border: 1px solid var(--c-cyan);
+    color: var(--c-cyan);
+    font-size: 11px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* 进度条 */
+  .progress-row {
+    margin-top: 8px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .progress-bar {
+    flex: 1;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 3px; overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--c-cyan), var(--c-magenta));
+    border-radius: 3px;
+    transition: width 0.6s ease;
+  }
+  .progress-text {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #9AA3B8;
+    min-width: 40px;
+    text-align: right;
+  }
+
+  /* 按键 */
+  .btn-block {
+    width: 100%;
+    padding: 14px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, var(--c-cyan), var(--c-magenta));
+    color: #02030A;
+    border: 0;
+    font-family: var(--font-display);
+    font-size: 14px; font-weight: 600;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: all 0.2s;
+    box-shadow: 0 8px 24px rgba(79, 209, 224, 0.4);
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-top: 20px;
+  }
+  .btn-block:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(79, 209, 224, 0.5); }
+  .btn-block:disabled {
+    background: var(--glass-bg-strong); color: #64748B;
+    box-shadow: none; cursor: not-allowed;
+  }
+  .btn-ghost {
+    width: 100%; padding: 12px;
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    color: #9AA3B8; font-size: 12px;
+    margin-top: 10px; cursor: pointer;
+  }
+  .btn-ghost:hover { color: #E8ECF4; border-color: var(--glass-border-strong); }
+
+  /* 凭证预览 */
+  .cred-preview {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--r-md);
+    padding: 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #9AA3B8;
+    line-height: 1.7;
+    margin-top: 14px;
+  }
+  .cred-preview .k { color: var(--c-cyan); }
+  .cred-preview .v { color: #C7CEDD; }
+  .cred-preview .masked { color: #64748B; font-style: italic; }
+
+  /* 状态面板 */
+  .state-card {
+    padding: 18px;
+    border-radius: var(--r-md);
+    background: linear-gradient(135deg, rgba(79, 209, 224, 0.08), rgba(255, 95, 173, 0.05));
+    border: 1px solid rgba(79, 209, 224, 0.2);
+    margin-bottom: 14px;
+  }
+  .state-card .head-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .state-card .ldot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--c-emerald);
+    box-shadow: 0 0 12px var(--c-emerald);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .state-card .ltitle { font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--c-emerald); }
+  .state-card .lsub { font-size: 11px; color: #9AA3B8; }
+  .state-card .lline { font-family: var(--font-mono); font-size: 10px; color: #64748B; margin-top: 8px; }
+
+  /* 警告条 */
+  .warn-banner {
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.25);
+    color: var(--c-rose);
+    font-size: 11px;
+    display: flex; align-items: flex-start; gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  /* 分隔 */
+  .sec-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--c-cyan);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin: 18px 0 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="phone">
+
+  <div class="screen">
+
+    <!-- 顶部 -->
+    <div class="head">
+      <div class="brand-mark">A</div>
+      <div class="name">Adb<span>Control</span></div>
+      <div class="role">CONTROLLED · AGENT</div>
+    </div>
+
+    <!-- 步骤 -->
+    <div class="stepper">
+      <div class="step done">
+        <div class="step-circle">✓</div>
+        <div class="step-label">安装</div>
+      </div>
+      <div class="step cur">
+        <div class="step-circle">2</div>
+        <div class="step-label">配对</div>
+      </div>
+      <div class="step">
+        <div class="step-circle">3</div>
+        <div class="step-label">授权</div>
+      </div>
+      <div class="step">
+        <div class="step-circle">4</div>
+        <div class="step-label">就绪</div>
+      </div>
+    </div>
+
+    <div class="sec-label">第一步 · 扫码配对</div>
+
+    <!-- 扫码卡片 -->
+    <div class="card">
+      <div class="card-title">扫描主控端二维码</div>
+      <div class="card-desc">QR 内仅含 pairToken + server_url + deviceId,不直接含凭证。配对成功后服务器签发临时 MQTT/R2 凭证。</div>
+
+      <div class="qr-area">
+        <div class="qr-grid">
+          <div class="corner"></div>
+        </div>
+      </div>
+
+      <div class="qr-caption">
+        将摄像头对准主控端二维码<br>
+        或 <span class="em">手动输入 pairToken</span>
+      </div>
+
+      <!-- 手动输入备选 -->
+      <input class="btn-ghost" style="text-align:left; font-family: var(--font-mono);" placeholder="pt_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+
+      <button class="btn-block">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 7V4a2 2 0 0 1 2-2h2M17 2h2a2 2 0 0 1 2 2v3M21 17v3a2 2 0 0 1-2 2h-3M7 22H4a2 2 0 0 1-2-2v-3M4 11h16M11 4v16"/></svg>
+        打开扫码器
+      </button>
+    </div>
+
+    <div class="sec-label">第二步 · 凭证签发预览</div>
+
+    <!-- 凭证预览(成功后) -->
+    <div class="card">
+      <div class="card-title">
+        临时凭证
+        <span class="badge-ok">已签发</span>
+      </div>
+      <div class="card-desc">凭证已 EncryptedFile 加密落盘,7 天有效,过期自动续。</div>
+
+      <div class="cred-preview">
+        <div><span class="k">broker.host</span>     <span class="v">o8cc1111.ala.cn-hangzhou.emqxsl.cn</span></div>
+        <div><span class="k">broker.username</span> <span class="v">o8cc1111@device-a001</span></div>
+        <div><span class="k">broker.password</span> <span class="masked">••••••••••••</span></div>
+        <div><span class="k">r2.bucket</span>       <span class="v">slss-boby</span></div>
+        <div><span class="k">r2.accessKey</span>   <span class="masked">••••••••••••</span></div>
+        <div><span class="k">sessionKey</span>      <span class="masked">••••••••••••</span></div>
+        <div><span class="k">expiresAt</span>       <span class="v">2026-08-27 14:31</span></div>
+      </div>
+
+      <div class="state-card">
+        <div class="head-row">
+          <div class="ldot"></div>
+          <div>
+            <div class="ltitle">MQTT 已连接</div>
+            <div class="lsub">TLS 8883 · cleanSession=false · QoS 1</div>
+          </div>
+        </div>
+        <div class="lline">subscribe → cmd/device-a001 · reminder/... · ping/...</div>
+      </div>
+    </div>
+
+    <div class="sec-label">第三步 · 权限自检</div>
+
+    <!-- 警告 -->
+    <div class="warn-banner">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-top:1px;flex-shrink:0;"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+      <div>必须先完成下面所有标 <strong style="font-family:var(--font-mono);">MUST</strong> 的项,Agent 才能进入常驻服务状态。</div>
+    </div>
+
+    <!-- 自检列表 -->
+    <div class="card">
+
+      <!-- Shizuku -->
+      <div class="check-row">
+        <div class="check-ic warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">Shizuku<span class="badge must">MUST</span></div>
+          <div class="check-desc">无 root 拿 shell 权限的桥接层,Android 11+ 支持无线调试启动。</div>
+          <div class="check-status warn">⚠ Shizuku 已安装但未授权</div>
+          <button class="check-action">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg>
+            打开 Shizuku 授权
+          </button>
+        </div>
+      </div>
+
+      <!-- Accessibility -->
+      <div class="check-row">
+        <div class="check-ic ok">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 5 5L20 7"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">无障碍服务<span class="badge must">MUST</span></div>
+          <div class="check-desc">监听窗口切换、模拟手势、屏蔽 UI 控件(如朋友圈)、辅助截屏。</div>
+          <div class="check-status">✓ 已启用 · AccessibilityService</div>
+        </div>
+      </div>
+
+      <!-- DeviceAdmin -->
+      <div class="check-row">
+        <div class="check-ic ok">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 5 5L20 7"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">Device Admin<span class="badge must">MUST</span></div>
+          <div class="check-desc">软件锁屏 + 防卸载(必须取消管理员才能卸载)。</div>
+          <div class="check-status">✓ 已激活 · lockNow() 可用</div>
+        </div>
+      </div>
+
+      <!-- UsageStats -->
+      <div class="check-row">
+        <div class="check-ic ok">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 5 5L20 7"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">使用情况访问<span class="badge must">MUST</span></div>
+          <div class="check-desc">获取前台 App 使用时长,整点上报 MySQL。</div>
+          <div class="check-status">✓ 已授权 · PACKAGE_USAGE_STATS</div>
+        </div>
+      </div>
+
+      <!-- 通知 -->
+      <div class="check-row">
+        <div class="check-ic warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">通知监听<span class="badge must">MUST</span></div>
+          <div class="check-desc">读取通知用于行为统计 + ADB 控制冗余(通知先于窗口触发 force-stop)。</div>
+          <div class="check-status warn">⚠ 待启用 NotificationListenerService</div>
+          <button class="check-action">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg>
+            前往通知访问设置
+          </button>
+        </div>
+      </div>
+
+      <!-- 位置 -->
+      <div class="check-row">
+        <div class="check-ic warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">位置<span class="badge opt">OPT</span></div>
+          <div class="check-desc">GPS / 网络定位,15 分钟上报,电子围栏触发。</div>
+          <div class="check-status warn">⚠ 仅前台授权,未给后台</div>
+          <button class="check-action">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg>
+            申请后台位置
+          </button>
+        </div>
+      </div>
+
+      <!-- 电池白名单 -->
+      <div class="check-row">
+        <div class="check-ic ok">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 5 5L20 7"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">电池优化白名单<span class="badge must">MUST</span></div>
+          <div class="check-desc">避开 Doze,保证前台 Service 存活。</div>
+          <div class="check-status">✓ 已加入白名单</div>
+        </div>
+      </div>
+
+      <!-- 开机自启 -->
+      <div class="check-row">
+        <div class="check-ic err">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </div>
+        <div class="check-body">
+          <div class="check-name">开机自启<span class="badge must">MUST</span></div>
+          <div class="check-desc">本机型为小米/MIUI,需手动在【自启动管理】中开启。</div>
+          <div class="check-status err">✗ 厂商后台策略限制</div>
+          <button class="check-action">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5v14"/></svg>
+            跳转自启动管理
+          </button>
+        </div>
+      </div>
+
+      <!-- 总进度 -->
+      <div class="progress-row">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 65%"></div>
+        </div>
+        <div class="progress-text">5 / 8</div>
+      </div>
+
+    </div>
+
+    <div class="sec-label">第四步 · 启动常驻</div>
+
+    <div class="card">
+      <div class="card-title">前台服务</div>
+      <div class="card-desc">启动后将持续显示一条不可清除的通知。包含 MQTT 客户端、命令引擎、遥测引擎、调度器。</div>
+
+      <div class="state-card" style="opacity:0.4; pointer-events:none;">
+        <div class="head-row">
+          <div class="ldot" style="background:#64748B; box-shadow:none; animation:none;"></div>
+          <div>
+            <div class="ltitle" style="color:#9AA3B8;">服务待启动</div>
+            <div class="lsub">需完成所有 MUST 项</div>
+          </div>
+        </div>
+        <div class="lline">foregroundServiceType=connectedDevice|dataSync</div>
+      </div>
+
+      <button class="btn-block" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 3l14 9-14 9V3z"/></svg>
+        启动 Agent 服务
+      </button>
+
+      <button class="btn-ghost">稍后再启动</button>
+    </div>
+
+    <!-- 底部说明 -->
+    <div style="text-align:center; margin-top:28px; font-size:10px; color:#64748B; line-height:1.7;">
+      AdbControlApp · Controlled Agent v1.2.3<br>
+      <span style="font-family: var(--font-mono);">device-a001 · Android 14 · Build SQ3A.220705.003.A1</span>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>
