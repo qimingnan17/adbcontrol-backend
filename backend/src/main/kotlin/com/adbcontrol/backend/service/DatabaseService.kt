@@ -649,6 +649,66 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
+    /**
+     * 通知签收回报入库(task_ack)。ack_id 即 REMINDER_RESULT 消息的 envelope id,
+     * UNIQUE KEY 拦截 QoS 1 重发。
+     */
+    fun insertTaskAck(ackId: String, deviceId: String, taskId: Long?, buttonText: String, ackedAt: Long) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "INSERT INTO task_ack (ack_id, task_id, device_id, button_text, acked_at) VALUES (?, ?, ?, ?, ?)"
+                ).use { ps ->
+                    ps.setString(1, ackId)
+                    if (taskId != null) ps.setLong(2, taskId) else ps.setNull(2, java.sql.Types.BIGINT)
+                    ps.setString(3, deviceId)
+                    ps.setString(4, buttonText)
+                    ps.setLong(5, ackedAt)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure {
+            // Duplicate entry 属正常幂等拦截,不打 warning
+            if (it.message?.contains("Duplicate entry") != true) {
+                logger.warn("insertTaskAck failed for {}: {}", deviceId, it.message)
+            }
+        }
+    }
+
+    /** 按任务查询签收列表(任务详情面板)。taskId 为 null 时返回全部(含手动下发)。 */
+    fun listTaskAcks(taskId: Long?): List<Map<String, Any>> {
+        val ds = dataSource ?: ensureDataSource() ?: return emptyList()
+        return runCatching {
+            ds.connection.use { conn ->
+                val sql = if (taskId == null)
+                    "SELECT ack_id, task_id, device_id, button_text, acked_at FROM task_ack ORDER BY acked_at DESC LIMIT 200"
+                else
+                    "SELECT ack_id, task_id, device_id, button_text, acked_at FROM task_ack WHERE task_id = ? ORDER BY acked_at DESC LIMIT 200"
+                conn.prepareStatement(sql).use { ps ->
+                    if (taskId != null) ps.setLong(1, taskId)
+                    ps.executeQuery().use { rs ->
+                        val list: MutableList<Map<String, Any>> = mutableListOf()
+                        while (rs.next()) {
+                            list += mapOf(
+                                "ackId" to rs.getString("ack_id"),
+                                "taskId" to rs.getLong("task_id"),
+                                "deviceId" to rs.getString("device_id"),
+                                // 空串保护:rs.getLong 对 NULL 返回 0,读到 task_id 为空时给 0
+                                "buttonText" to rs.getString("button_text"),
+                                "ackedAt" to rs.getLong("acked_at"),
+                            )
+                        }
+                        list
+                    }
+                }
+            }
+        }.getOrElse {
+            logger.warn("listTaskAcks failed: {}", it.message)
+            emptyList()
+        }
+    }
+
     fun listRecentCommands(deviceId: String, limit: Int = 50): List<Map<String, Any>> {
         val ds = dataSource ?: ensureDataSource() ?: return emptyList()
         return runCatching {

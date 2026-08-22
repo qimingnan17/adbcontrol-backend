@@ -5,6 +5,7 @@ import com.adbcontrol.shared.model.ActivityReport
 import com.adbcontrol.shared.model.ExecutionResult
 import com.adbcontrol.shared.model.HealthReport
 import com.adbcontrol.shared.model.LocationReport
+import com.adbcontrol.shared.model.ReminderAck
 import com.adbcontrol.shared.model.StatusReport
 import com.adbcontrol.shared.model.UsageReport
 import com.adbcontrol.shared.net.MqttTopics
@@ -278,6 +279,18 @@ class TelemetryIngestService(
                 }
             }
             topic.startsWith(MqttTopics.RESULT_PREFIX) -> {
+                // REMINDER_RESULT:通知按钮签收回报,载荷为 ReminderAck;走独立表 task_ack。
+                if (envelope.type == "REMINDER_RESULT") {
+                    val ack = json.decodeFromString(ReminderAck.serializer(), envelope.payload)
+                    db.insertTaskAck(
+                        ackId = envelope.id,
+                        deviceId = deviceId,
+                        taskId = ack.taskId,
+                        buttonText = ack.buttonText,
+                        ackedAt = ack.timestamp,
+                    )
+                    return
+                }
                 val r = json.decodeFromString(ExecutionResult.serializer(), envelope.payload)
                 db.insertExecutionLog(
                     deviceId = deviceId,

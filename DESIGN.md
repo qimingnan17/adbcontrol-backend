@@ -1177,10 +1177,18 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 - 被控端:扫码器 ML Kit→**ZXing 内嵌**(国行无 GMS,ML Kit 模块下载永远卡住);配对报文补 `serverUrl` 必填字段;Android 14 FGS location 类型动态裁剪(原配对前定位未授权即崩溃循环);配对后服务重载配置拉起 MQTT;权限自检真实检测 + 每项「去授权」跳转对应系统设置;无障碍服务触摸探索模式移除(原开启即"屏幕失控")
 - 构建:中文路径需 junction 至 ASCII 路径 + `android.overridePathCheck`;`org.gradle.jvmargs=-Xmx3g`;阿里云 Maven 镜像(`~/.gradle/init.gradle.kts`)
 
+**2026-08-22 升级(本仓库本地编译/测试通过,真机联调仍待凭证):**
+
+- [x] 任务栏通知链路:Web 自定义标题/正文/按钮文字(最多 2 个,受控端弹任务栏通知并回报按钮点击)→ 后端 `DeviceCommandBridge.dispatchReminder`(reminder/{deviceId},HMAC 签名)→ 受控端 `ReminderNotificationCenter`(IMPORTANCE_HIGH) → `REMINDER_RESULT` 回 result/{deviceId} → ingestor 落 `task_ack` 表 → Web 任务行「签收」查看
+- [x] 定时通知:cron 调度由后端 `TaskSchedulerService` 承载(30s 轮询 + cron-utils UNIX 解析 + 进程内发火去重),notify 类任务走 reminder,命令类走 cmd;此前任务表只存不跑
+- [x] 应用限时(累计时长 + 禁用时间窗双模式):Web `app_time_limit` / `app_time_window` → `Command(APP_TIME)` → 受控端 `AppTimeController` 本地执行(1 分钟采样,SharedPreferences 持久化配置,跨天自动重置累计并恢复)
+- [x] 上报提速:Status 兜底 5→2 分钟/变化检测 30→10 秒、Location 15→5 分钟、Health 30→10 分钟;Web 首屏 bundle 拆 chunk(主入口 1.25MB → 60KB,element-plus 独立长缓存)
+- [x] 协议对拍测试:ReminderPayload/ReminderAck 序列化往返 + DeviceCommandBridge 新映射单测
+
 **已知遗留(未修,按优先级):**
 
 - [ ] 被控端:凭证 7 天到期无自动续期(renew 已可用但无触发点)
-- [ ] 被控端:静默安装前缺 APK 签名/包名校验;截屏只写本地不回传(R2 上传链路未接线);`AppTimeController` 本地限额未接线
+- [ ] 被控端:静默安装前缺 APK 签名/包名校验;截屏只写本地不回传(R2 上传链路未接线)
 - [ ] 后端:`notification_log` 表零写入(通知事件入错表);XFF 可伪造 + 登录限流可被用来锁死账号;sessionKey/MQTT 密码明文存 MySQL;`/update/report` 无界内存
 - [ ] EMQX 无 ACL(Serverless 限制),越权防护完全依赖 HMAC 验签
 - [ ] LWT retained 消息上线后不清除,新订阅者会收到过期"离线"
