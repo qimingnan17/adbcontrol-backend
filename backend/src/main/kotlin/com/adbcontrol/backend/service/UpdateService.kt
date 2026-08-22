@@ -12,43 +12,17 @@ import java.util.concurrent.CopyOnWriteArrayList
  * 软件更新服务器(README 11.2)。
  *
  * - GET /update/check:查最新 manifest,返回 [UpdateCheckResponse](fullApkUrl + 可选 patchUrl + sha256 + priority)。
- * - POST /update/report:接收 [UpdateResultReport] 入库(开发期内存)。
+ * - POST /update/report:接收 [UpdateResultReport](开发期内存)。
  *
- * versions manifest 当前存内存(预置示例版本);TODO 持久化到 DB。
+ * 安全约束:本服务**不预置任何示例版本** —— 硬编码的假 APK URL + 无效 sha256 会让
+ * 被控端下载到不存在的包,甚至让更新链形同虚设。没有任何真实 manifest 时一律返回
+ * hasUpdate=false;真实版本由管理流程通过 [addVersion] 注入(持久化到 DB 为 TODO)。
  * 差分包生成(bsdiff)先 stub:上传新 APK 时基于历史版本生成 patch 的逻辑留 TODO。
  */
 class UpdateService(private val config: BackendConfig) {
     private val logger = LoggerFactory.getLogger(javaClass)
-
     private val versions = CopyOnWriteArrayList<VersionManifest>()
     private val reports = CopyOnWriteArrayList<UpdateResultReport>()
-
-    init {
-        // 预置示例版本(便于联调)。真实版本由管理流程上传(见 addVersion / TODO bsdiff)。
-        versions += VersionManifest(
-            versionCode = 10000,
-            versionName = "1.0.0",
-            channel = "stable",
-            fullApkUrl = "${config.r2Endpoint}/${config.r2Bucket}/releases/controlled-1.0.0.apk",
-            sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
-            sizeBytes = 12_000_000,
-            releaseNotes = "基线版本",
-        )
-        versions += VersionManifest(
-            versionCode = 10100,
-            versionName = "1.1.0",
-            channel = "stable",
-            fullApkUrl = "${config.r2Endpoint}/${config.r2Bucket}/releases/controlled-1.1.0.apk",
-            patchUrl = "${config.r2Endpoint}/${config.r2Bucket}/releases/controlled-1.0.0-to-1.1.0.patch",
-            patchFromVersionCode = 10000,
-            patchToVersionCode = 10100,
-            sha256 = "1111111111111111111111111111111111111111111111111111111111111111",
-            sizeBytes = 1_500_000,
-            releaseNotes = "1. 新增 Shizuku 桥接\n2. 修复若干问题",
-            priority = UpdatePriority.NORMAL,
-        )
-        logger.info("Seeded {} version manifest(s)", versions.size)
-    }
 
     fun check(
         deviceId: String,

@@ -11,9 +11,12 @@ import com.adbcontrol.backend.routes.pairingRoutes
 import com.adbcontrol.backend.routes.updateRoutes
 import com.adbcontrol.backend.service.AclService
 import com.adbcontrol.backend.service.DatabaseService
+import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.EmqxProxyService
 import com.adbcontrol.backend.service.PairingService
+import com.adbcontrol.backend.service.TelemetryIngestService
 import com.adbcontrol.backend.service.UpdateService
+import io.ktor.server.auth.authenticate
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -90,14 +93,21 @@ fun Application.module() {
     val pairingService = PairingService(config, aclService, databaseService)
     val updateService = UpdateService(config)
     val emqxProxy = EmqxProxyService(config)
+    // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
+    val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
+    val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
 
     configureSecurity(databaseService)
 
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
+        telemetryIngest.close()
         emqxProxy.close()
         databaseService.close()
     }
+
+    // 启动遥测 ingestor(凭据缺失时内部打 warning 并跳过,不影响其余路由)。
+    telemetryIngest.start()
 
     // 路由:pair / renew / update / emqx-proxy / health + auth + admin
     routing {
@@ -110,10 +120,14 @@ fun Application.module() {
         }
         authRoutes(databaseService)
         // 受 auth 保护的 admin 路由放在 authenticate 块里(由 AdminRoutes.kt 内部 authenticate("auth-session") 控制)
-        adminRoutes(databaseService, pairingService, emqxProxy)
+        adminRoutes(databaseService, pairingService, commandBridge)
         pairingRoutes(pairingService)
         updateRoutes(updateService)
-        emqxRoutes(emqxProxy)
+        // EMQX REST 代理也收进会话保护:不再允许未登录访客枚举在线设备 / 订阅,
+        // 否则等于公开暴露设备指纹与在线状态侦察探针
+        authenticate("auth-session") {
+            emqxRoutes(emqxProxy)
+        }
     }
 
     appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /pair, /renew, /update/check, /update/report, /emqx/devices, /emqx/subscriptions")

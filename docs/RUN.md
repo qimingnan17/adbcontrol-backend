@@ -71,6 +71,12 @@ curl -s http://localhost:8080/health
 
 ### 2.4 验证配对接口(使用预置 demo token)
 
+> 说明:`pt_demo_001` **现在只在显式设置 `ADB_SEED_DEMO_TOKEN=true` 时播种**,
+> 不再默认注入(原实现按 serverUrl 域名隐式开启,曾被默认 example.com
+> 推广到生产上成为后门)。日常开发：启动前
+> `export ADB_SEED_DEMO_TOKEN=true`,或者直接去 Web 控制台「令牌管理」点新增,
+> 拿到一个一次性的真实 pairToken 再做后面的步骤。
+
 ```bash
 curl -s -X POST http://localhost:8080/pair \
   -H 'Content-Type: application/json' \
@@ -148,7 +154,8 @@ adb shell sh /storage/emulated/0/Android/data/moe.shizuku.privileged.api/start.s
 
 ## 5. 配对流程(端到端)
 
-1. **后端签发 pairToken**:由管理控制台生成(开发期用预置 `pt_demo_001`,默认 10 分钟过期)
+1. **后端签发 pairToken**:由 Web 管理控制台「令牌管理」生成(开发期也可
+   启动时加 `ADB_SEED_DEMO_TOKEN=true` 播种预置的 `pt_demo_001`,默认 10 分钟过期)
 2. **被控端扫码/输入**:在被控端 MainActivity 配对页输入 pairToken + serverUrl
 3. **被控端调 /pair**:后端校验 token → 签发临时 MQTT 凭证(7 天)+ 长期 sessionKey
 4. **被控端加密落盘**:用 EncryptedFile(AES-GCM)保存凭证
