@@ -10,9 +10,11 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 
 fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridge: DeviceCommandBridge) {
     authenticate("auth-session") {
@@ -25,14 +27,18 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
                 HttpStatusCode.BadRequest,
                 mapOf("message" to "missing deviceId")
             )
-            call.respond(mapOf("overview" to (db.getDeviceOverview(id) ?: mapOf<String, Any?>())))
+            call.respond(buildJsonObject {
+                put("overview", (db.getDeviceOverview(id) ?: emptyMap<String, Any?>()).toJsonElement())
+            })
         }
 
         get("/api/devices/{deviceId}/commands") {
             val id = call.parameters["deviceId"]!!
             // limit 是 query 参数,不是路由参数
             val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 50
-            call.respond(mapOf("items" to db.listRecentCommands(id, limit)))
+            call.respond(buildJsonObject {
+                put("items", db.listRecentCommands(id, limit).toJsonElement())
+            })
         }
 
         post("/api/devices/{deviceId}/commands") {
@@ -53,13 +59,11 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
                 ?: emptyMap()
             when (val r = commandBridge.dispatch(id, cmdType, args)) {
                 is DeviceCommandBridge.DispatchResult.Ok ->
-                    call.respond(
-                        mapOf(
-                            "commandId" to r.commandId,
-                            "status" to r.emqxStatus,
-                            "emqx" to r.emqxBody,
-                        )
-                    )
+                    call.respond(buildJsonObject {
+                        put("commandId", r.commandId)
+                        put("status", r.emqxStatus)
+                        put("emqx", r.emqxBody.toJsonElement())
+                    })
                 is DeviceCommandBridge.DispatchResult.UnsupportedType ->
                     call.respond(
                         HttpStatusCode.BadRequest,
@@ -81,7 +85,9 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         get("/api/tasks") {
             // deviceId 是 query 参数(?deviceId=xxx),不是路由参数
             val deviceId = call.request.queryParameters["deviceId"]
-            call.respond(mapOf("items" to db.listTasks(deviceId)))
+            call.respond(buildJsonObject {
+                put("items", db.listTasks(deviceId).toJsonElement())
+            })
         }
 
         post("/api/tasks") {
@@ -110,7 +116,9 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         get("/api/pairing-tokens") {
             // includeUsed 是 query 参数,不是路由参数
             val all = call.request.queryParameters["includeUsed"] == "1"
-            call.respond(mapOf("items" to pairing.listPairingTokens(all)))
+            call.respond(buildJsonObject {
+                put("items", pairing.listPairingTokens(all).toJsonElement())
+            })
         }
 
         post("/api/pairing-tokens") {
