@@ -175,6 +175,12 @@ adb shell sh /storage/emulated/0/Android/data/moe.shizuku.privileged.api/start.s
 | Shizuku 可用 | 被控端 UI 自检列表 | Shizuku 项显示「已授权」 |
 | MQTT 连接 | 被控端 UI 链路状态 | 显示已连 broker |
 | 命令往返 | 主控端下发 COMMAND | 被控端执行 + 回执 COMMAND_RESULT |
+| 通知下发 | Web → 设备详情「任务栏通知」(或任务 notify) → 下发 | 被控端任务栏出现高优先级通知,按钮文字与配置一致 |
+| 按钮签收 | 被控端手机点击通知按钮(或点开通知) | Web 任务行「签收」列表出现该设备的按钮文字 + 时间;`task_ack` 表新增一行 |
+| 定时通知 | 新建 notify 任务设每分钟 cron,等待 ≤2 分钟 | 被控端弹通知;后端日志 `task <id> fired -> <device>` |
+| 应用限时 | Web → `app_time_limit`(包名 + 分钟数) | 超限后被控端 `am suspend`;次日自动重置 |
+| 时间窗 | Web → `app_time_window`(如 22:00-07:00) | 处于窗内应用被 suspend,出窗自动恢复 |
+| 签收幂等 | 手机端同一按钮连点两次 | task_ack 仅一行(uq_ack_id 拦截重发) |
 
 ---
 

@@ -328,6 +328,35 @@ enum class MessageType {
 
 > `{deviceId}` 为被控端唯一标识(配对时由服务器分配,持久化),`+` 为单层通配符。
 
+### 4.5 通知与签收协议(2026-08-22 落地)
+
+主控 → 被控 REMINDER 载荷(`shared.model.ReminderPayload`,两端 shared 镜像一致,
+序列化对拍见 `ReminderSerializationTest`):
+
+```json
+{
+  "title": "该写作业了",
+  "text": "完成后点按钮",
+  "buttons": ["收到", "完成"],      // 自定义按钮文字,最多 2 个;空 = 纯展示通知
+  "expectAck": true,               // true 时点击按钮/本体即视为签收
+  "taskId": 42                     // 定时任务时关联;手动下发为 null
+}
+```
+
+被控端点击后在任务栏取消通知并向 `result/{deviceId}` 发布 REMINDER_RESULT,
+载荷为 `ReminderAck`:
+
+```json
+{ "refId": "<REMINDER 的 envelope id>", "taskId": 42, "buttonText": "完成", "timestamp": 1787400000000 }
+```
+
+- 按钮文字完全由发布方(Web 任务编辑器/设备页)自定义,受控端只做渲染;
+- 受控端 ack 消息 id 派生自 `ack-<refId>-<buttonText.hash>`,配合 `task_ack.uq_ack_id`
+  构成第三道幂等(QoS 1 重发去重);
+- 后端 ingestor 在 result topic 按 envelope.type 分流:`REMINDER_RESULT` → `task_ack`,
+  其余为 `COMMAND_RESULT` → `execution_log`;
+- Web 任务行「签收」按钮查 `GET /api/task-acks?taskId=` 展示签收列表。
+
 ### 4.4 EMQX Cloud REST API(主控端在线查询)
 
 | 接口 | 用途 |
@@ -360,7 +389,7 @@ enum class MessageType {
 }
 ```
 
-- 触发:状态变化(电量±5%/网络切换/屏幕开关)立即上报 + 兜底每 5 分钟一次
+- 触发:状态变化(电量±5%/网络切换/屏幕开关)立即上报(每 10 秒扫描变化)+ 兜底每 2 分钟一次
 - QoS 1,避免漏报
 
 ### 5.2 电量
@@ -382,7 +411,7 @@ enum class MessageType {
 ```
 
 - 采集:`LocationManager` GPS + Network 双 provider
-- 上报周期:默认 15 分钟(可远程配置),QoS 0
+- 上报周期:默认 5 分钟(可远程配置),QoS 0
 - 电子围栏:主控端下发圆形围栏(lat/lng/radius)至被控端 Room `fence` 表;进入/离开触发 `fenceEvent` 并 QoS 1 上报
 - 低功耗:屏幕关闭时延长至 30 分钟;定位失败回退 network provider
 
@@ -426,7 +455,7 @@ enum class MessageType {
 }
 ```
 
-- 触发:启动时全量上报 + 每 30 分钟增量上报
+- 触发:启动时全量上报 + 每 10 分钟增量上报
 - 主控端 UI 展示能力雷达:
 
 ```text
@@ -444,7 +473,10 @@ enum class MessageType {
 
 ## 六、调度系统
 
-主控端 cron 调度,被控端只接受命令(除应用时长限制采样由被控端做本地兜底)。
+> 2026-08-22 起:cron 调度由**后端 `TaskSchedulerService`** 承载(30s 轮询 task 表 +
+> cron-utils UNIX 5 字段解析 + 进程内发火去重)。notify 类任务下发到 `reminder/` 通道,
+> 命令类任务下发到 `cmd/` 通道;deviceId 为空的广播任务逐台下发到已登记设备。
+> 被控端端仍只接受命令不主动调度,应用时长/时间窗采样由被控端本地兜底。
 
 ### 6.1 软件定时使用(应用时间管理)
 
@@ -452,9 +484,12 @@ enum class MessageType {
 
 | 模式 | 触发 | 被控端动作 |
 | --- | --- | --- |
-| 时间窗口禁用/放开 | cron 成对任务(SUSPEND / UNSUSPEND) | `pm disable-user` / `pm enable`(Shizuku)或无障碍切回 |
-| 累计使用时长限制 | 被控端周期采样 `UsageStatsManager`,达到阈值 | suspend 该 App + 提醒 |
+| 禁用时间窗(支持跨零点) | 后端下发 `Command(APP_TIME, "setWindow", {pkg, start:"22:00", end:"07:00"})` 后,被控端 `AppTimeController` 每分钟采样判定 | 进窗 `am suspend` / 出窗 `am unsuspend` |
+| 累计使用时长限制 | 后端下发 `setLimit`(pkg, minutes),被控端采样 `UsageStatsManager`(1 分钟) | 达阈值 suspend + PUSH 上报 LIMIT_REACHED;跨天自动重置并恢复 |
 | 最后 10 分钟提醒 | 主控端在窗口结束前 10 分钟 cron 触发 | 下发 REMINDER,被控端发本地通知 |
+
+> 配置持久化:limits/windows 写 SharedPreferences(`app_time_config`),
+> 受控端进程被杀重启后自动恢复;清限 `clearLimit` / `clearWindow`。
 
 ```kotlin
 // 主控端窗口型任务(成对)
@@ -492,6 +527,23 @@ fun scheduleWindow(rule: WindowRule) {
 被控端 `local_results` / `fence`(围栏缓存) / `local_app_usage`(本地累加) / `pending_messages`(断线缓存)
 
 ### 7.2 远程 MySQL DDL
+
+> 本轮新增 `task_ack`(任务通知签收回报):
+>
+> ```sql
+> -- 任务通知签收回报(受控端 REMINDER_RESULT → ack_id 幂等)
+> CREATE TABLE IF NOT EXISTS task_ack (
+>   id           BIGINT       PRIMARY KEY AUTO_INCREMENT,
+>   ack_id       VARCHAR(64)  NOT NULL,   -- REMINDER_RESULT envelope id
+>   task_id      BIGINT       NULL,       -- 定时任务时关联 task.task_id
+>   device_id    VARCHAR(64)  NOT NULL,
+>   button_text  VARCHAR(128) NOT NULL,   -- 被点击的按钮文字;"open" 表示点开通知本体
+>   acked_at     BIGINT       NOT NULL,
+>   UNIQUE KEY uq_ack_id (ack_id),
+>   INDEX idx_task (task_id),
+>   INDEX idx_dev_time (device_id, acked_at)
+> );
+> ```
 
 ```sql
 -- 设备台账
@@ -691,7 +743,7 @@ class ControllerMessageHandler(
 - **连接池**:HikariCP `maxPoolSize=2`,短事务,每条 INSERT 短连接
 - **上传周期**:
   - `app_usage_daily`:整点 cron 上传(`0 * * * *`)
-  - `location_history`:实时 QoS 0,15 分钟采样
+  - `location_history`:实时 QoS 0,5 分钟采样
   - `app_activity_log`:事件触发即时上报
   - `notification_log`:被控端按白名单过滤后即时上报
 
