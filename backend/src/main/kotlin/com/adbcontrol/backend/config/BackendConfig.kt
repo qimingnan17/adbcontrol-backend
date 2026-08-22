@@ -15,7 +15,8 @@ import java.util.Properties
  *
  * secrets.properties 不入 git(见 /workspace/.gitignore)。
  *
- * env 变量约定:均以 `ADB_` 前缀,如 `ADB_EMQX_APP_SECRET`、`ADB_DB_PASSWORD` 等。
+ * env 变量约定:均以 `ADB_` 前缀,如 `ADB_EMQX_APP_SECRET`、`ADB_MYSQL_PASSWORD` 等。
+ * DB 系列兼容旧命名 `ADB_DB_HOST/PORT/NAME/USER/PASSWORD`(优先 `ADB_MYSQL_*`)。
  */
 data class BackendConfig(
     /** 后端自身对外 URL,用于生成 QR 码 */
@@ -84,7 +85,7 @@ data class BackendConfig(
         if (emqxAppSecret.isBlank()) missing += "ADB_EMQX_APP_SECRET (EMQX app secret)"
         if (r2AccessKey.isBlank()) missing += "ADB_R2_ACCESS_KEY (R2 access key)"
         if (r2AccessSecret.isBlank()) missing += "ADB_R2_ACCESS_SECRET (R2 access secret)"
-        if (dbPassword.isBlank()) missing += "ADB_DB_PASSWORD (MySQL password)"
+        if (dbPassword.isBlank()) missing += "ADB_MYSQL_PASSWORD (MySQL password)"
         return missing
     }
 
@@ -129,6 +130,17 @@ data class BackendConfig(
                 return result
             }
 
+            // DB 环境变量存在两套历史命名:fly.toml 注释与 DEPLOY.md 用 ADB_MYSQL_*,
+            // 早期实现读 ADB_DB_*。优先文档约定 ADB_MYSQL_*,回退 ADB_DB_*,
+            // 避免按文档执行 fly secrets set 后后端仍拿空密码连库。
+            fun getDb(suffix: String, propKey: String, default: String): String =
+                System.getenv("ADB_MYSQL_$suffix")?.takeIf { it.isNotBlank() }
+                    ?: get("ADB_DB_$suffix", propKey, default)
+
+            fun getIntDb(suffix: String, propKey: String, default: Int): Int =
+                System.getenv("ADB_MYSQL_$suffix")?.toIntOrNull()
+                    ?: getInt("ADB_DB_$suffix", propKey, default)
+
             return BackendConfig(
                 serverUrl = get("ADB_SERVER_URL", "server.url", DEFAULT_SERVER_URL),
                 emqxHost = get("ADB_EMQX_HOST", "emqx.host", DEFAULT_EMQX_HOST),
@@ -141,11 +153,11 @@ data class BackendConfig(
                 r2Bucket = get("ADB_R2_BUCKET", "r2.bucket", DEFAULT_R2_BUCKET),
                 r2AccessKey = get("ADB_R2_ACCESS_KEY", "r2.access_key", ""),
                 r2AccessSecret = get("ADB_R2_ACCESS_SECRET", "r2.access_secret", ""),
-                dbHost = get("ADB_DB_HOST", "db.host", DEFAULT_DB_HOST),
-                dbPort = getInt("ADB_DB_PORT", "db.port", DEFAULT_DB_PORT),
-                dbName = get("ADB_DB_NAME", "db.name", DEFAULT_DB_NAME),
-                dbUser = get("ADB_DB_USER", "db.user", DEFAULT_DB_USER),
-                dbPassword = get("ADB_DB_PASSWORD", "db.password", ""),
+                dbHost = getDb("HOST", "db.host", DEFAULT_DB_HOST),
+                dbPort = getIntDb("PORT", "db.port", DEFAULT_DB_PORT),
+                dbName = getDb("NAME", "db.name", DEFAULT_DB_NAME),
+                dbUser = getDb("USER", "db.user", DEFAULT_DB_USER),
+                dbPassword = getDb("PASSWORD", "db.password", ""),
                 emqxIngestUsername = get("ADB_EMQX_INGEST_USERNAME", "emqx.ingest_username", ""),
                 emqxIngestPassword = get("ADB_EMQX_INGEST_PASSWORD", "emqx.ingest_password", ""),
             )
