@@ -36,6 +36,9 @@ data class BackendConfig(
     val dbName: String,
     val dbUser: String,
     val dbPassword: String,
+    /** 遥测 ingestor 使用的 MQTT 账号(运维在 EMQX 控制台手工创建一次,非代码自注册)。 */
+    val emqxIngestUsername: String = "",
+    val emqxIngestPassword: String = "",
 ) {
     /** 由模板拼装单设备 Broker 凭证(用户名/密码在配对时签发)。 */
     fun buildBroker(username: String, password: String): BrokerConfig = BrokerConfig(
@@ -143,6 +146,8 @@ data class BackendConfig(
                 dbName = get("ADB_DB_NAME", "db.name", DEFAULT_DB_NAME),
                 dbUser = get("ADB_DB_USER", "db.user", DEFAULT_DB_USER),
                 dbPassword = get("ADB_DB_PASSWORD", "db.password", ""),
+                emqxIngestUsername = get("ADB_EMQX_INGEST_USERNAME", "emqx.ingest_username", ""),
+                emqxIngestPassword = get("ADB_EMQX_INGEST_PASSWORD", "emqx.ingest_password", ""),
             )
         }
 

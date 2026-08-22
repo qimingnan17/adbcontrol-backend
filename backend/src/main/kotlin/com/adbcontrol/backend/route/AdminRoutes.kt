@@ -1,15 +1,20 @@
 package com.adbcontrol.backend.route
 
+import com.adbcontrol.backend.model.TaskRequest
 import com.adbcontrol.backend.service.DatabaseService
-import com.adbcontrol.backend.service.EmqxProxyService
+import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.PairingService
 import io.ktor.http.*
 import io.ktor.server.auth.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
-fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, emqx: EmqxProxyService) {
+fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridge: DeviceCommandBridge) {
     authenticate("auth-session") {
         get("/api/devices") {
             call.respond(mapOf("items" to db.listDevicesWithStatus()))
@@ -25,60 +30,96 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, emqx: EmqxPr
 
         get("/api/devices/{deviceId}/commands") {
             val id = call.parameters["deviceId"]!!
-            val limit = call.parameters["limit"]?.toIntOrNull() ?: 50
+            // limit 是 query 参数,不是路由参数
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 50
             call.respond(mapOf("items" to db.listRecentCommands(id, limit)))
         }
 
         post("/api/devices/{deviceId}/commands") {
             val id = call.parameters["deviceId"]!!
-            val body = runCatching { call.receive<Map<String, Any>>() }.getOrNull()
-            val cmdType = body?.get("type")?.toString()?.removeSurrounding("\"")
+            // 按 JSON 对象解析,交由 DeviceCommandBridge 映射成 signed envelope。
+            // 旧实现把裸 {'commandId','type',...} JSON 直发 adb/dev/{id}/cmd/in,
+            // 被控端订阅的 cmd/{deviceId} 收不到、MessageCodec 也无签名可验 → 全链路静默失效。
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val cmdType = body?.get("type")?.jsonPrimitive?.contentOrNull
                 ?: return@post call.respond(
                     HttpStatusCode.BadRequest,
                     mapOf("message" to "missing type")
                 )
-            val cmdId = "web-" + System.currentTimeMillis()
-            val topic = "adb/dev/$id/cmd/in"
-            val argsJson = body["args"]?.toString() ?: "{}"
-            val payload =
-                """{"commandId":"$cmdId","type":"$cmdType","args":$argsJson,"webSource":1,"ts":${System.currentTimeMillis()}}"""
-            val resp = emqx.publish(topic, payload)
-            call.respond(mapOf("commandId" to cmdId, "status" to resp.status, "emqx" to resp.body))
+            val args = (body["args"] as? JsonObject)
+                ?.entries?.mapNotNull { (k, v) ->
+                    runCatching { k to v.jsonPrimitive.content }.getOrNull()
+                }?.toMap()
+                ?: emptyMap()
+            when (val r = commandBridge.dispatch(id, cmdType, args)) {
+                is DeviceCommandBridge.DispatchResult.Ok ->
+                    call.respond(
+                        mapOf(
+                            "commandId" to r.commandId,
+                            "status" to r.emqxStatus,
+                            "emqx" to r.emqxBody,
+                        )
+                    )
+                is DeviceCommandBridge.DispatchResult.UnsupportedType ->
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        mapOf("message" to "unsupported command type: ${r.type}")
+                    )
+                is DeviceCommandBridge.DispatchResult.MissingArg ->
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        mapOf("message" to "missing args.${r.field}")
+                    )
+                DeviceCommandBridge.DispatchResult.SessionMissing ->
+                    call.respond(
+                        HttpStatusCode.Conflict,
+                        mapOf("message" to "设备未建立配对会话(sessionKey 不在后端),请重新配对")
+                    )
+            }
         }
 
         get("/api/tasks") {
-            val deviceId = call.parameters["deviceId"]
+            // deviceId 是 query 参数(?deviceId=xxx),不是路由参数
+            val deviceId = call.request.queryParameters["deviceId"]
             call.respond(mapOf("items" to db.listTasks(deviceId)))
         }
 
         post("/api/tasks") {
-            val b = call.receive<Map<String, Any>>()
+            val b = call.receive<TaskRequest>()
             val id = db.upsertTask(b)
+                ?: return@post call.respond(HttpStatusCode.InternalServerError, mapOf("message" to "task create failed"))
             call.respond(mapOf("id" to id))
         }
 
         put("/api/tasks/{id}") {
-            val b = call.receive<Map<String, Any>>()
-            val id = call.parameters["id"]!!.toInt()
-            db.upsertTask(b + ("id" to id))
+            val id = call.parameters["id"]?.toLongOrNull()
+                ?: return@put call.respond(HttpStatusCode.BadRequest, mapOf("message" to "invalid task id"))
+            val b = call.receive<TaskRequest>()
+            db.upsertTask(b.copy(id = id))
+                ?: return@put call.respond(HttpStatusCode.NotFound, mapOf("message" to "task not found"))
             call.respond(mapOf("ok" to true))
         }
 
         delete("/api/tasks/{id}") {
-            val id = call.parameters["id"]!!.toInt()
+            val id = call.parameters["id"]?.toIntOrNull()
+                ?: return@delete call.respond(HttpStatusCode.BadRequest, mapOf("message" to "invalid task id"))
             val n = db.deleteTask(id)
             call.respond(mapOf("deleted" to n))
         }
 
         get("/api/pairing-tokens") {
-            val all = call.parameters["includeUsed"] == "1"
+            // includeUsed 是 query 参数,不是路由参数
+            val all = call.request.queryParameters["includeUsed"] == "1"
             call.respond(mapOf("items" to pairing.listPairingTokens(all)))
         }
 
         post("/api/pairing-tokens") {
-            val b = runCatching { call.receive<Map<String, Any>>() }.getOrNull() ?: emptyMap()
-            val name = b["deviceName"]?.toString()
-            val ttl = b["ttlMs"]?.toString()?.toLongOrNull() ?: 10 * 60_000L
+            // Map<String, Any> 无法被 kotlinx.serialization 反序列化,必须按 JsonObject 解析
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val name = body?.get("deviceName")?.jsonPrimitive?.contentOrNull
+            // ttl 收敛到 [1 分钟, 24 小时],防止生成永不过期的配对 token
+            val ttl = (body?.get("ttlMs")?.jsonPrimitive?.longOrNull ?: 10 * 60_000L)
+                .coerceIn(60_000L, 24 * 3_600_000L)
             val token = pairing.generatePairToken(name, ttl)
             call.respond(token)
         }

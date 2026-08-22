@@ -31,7 +31,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         } else {
             dataSource = createPool(dbConfig)
             runSchema()
-            seedAdminIfEmpty()
+            // 管理员账号不在启动时种入:由 /api/setup 在首次访问时初始化(见 AuthRoutes)
         }
     }
 
@@ -69,7 +69,6 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             if (ds != null) {
                 dataSource = ds
                 runSchema()
-                seedAdminIfEmpty()
             }
             ds
         }
@@ -126,6 +125,89 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
         }
         logger.debug("registerDevice upsert: {}", deviceId)
+    }
+
+    // ---- 配对会话持久化(pair_session) ----
+    // 目标:后端重启后恢复的配对状态,避免已配对设备被迫重新扫码(README 8.3 的约束:
+    // 内存 ConcurrentHashMap 存续期与进程相同,不满足生产部署需求)。
+
+    data class PairSessionRow(
+        val deviceId: String,
+        val pairToken: String,
+        val sessionKey: String,
+        val mqttPassword: String,
+        val expiresAt: Long,
+    )
+
+    /** 配对成功 / 续期时更新会话记录(upsert)。 */
+    fun upsertPairSession(row: PairSessionRow) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        val now = System.currentTimeMillis()
+        val sql = """
+            INSERT INTO pair_session
+              (device_id, pair_token, session_key, mqtt_password, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              pair_token = VALUES(pair_token), session_key = VALUES(session_key),
+              mqtt_password = VALUES(mqtt_password), expires_at = VALUES(expires_at),
+              updated_at = VALUES(updated_at)
+        """.trimIndent()
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(sql).use { ps ->
+                    ps.setString(1, row.deviceId)
+                    ps.setString(2, row.pairToken)
+                    ps.setString(3, row.sessionKey)
+                    ps.setString(4, row.mqttPassword)
+                    ps.setLong(5, row.expiresAt)
+                    ps.setLong(6, now)
+                    ps.setLong(7, now)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("upsertPairSession failed for ${row.deviceId}: {}", it.message) }
+    }
+
+    /** 服务启动时加载全部会话(供 PairingService 恢复内存表)。 */
+    fun listPairSessions(): List<PairSessionRow> {
+        val ds = dataSource ?: ensureDataSource() ?: return emptyList()
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery(
+                        "SELECT device_id, pair_token, session_key, mqtt_password, expires_at FROM pair_session"
+                    ).use { rs ->
+                        val list = mutableListOf<PairSessionRow>()
+                        while (rs.next()) {
+                            list += PairSessionRow(
+                                deviceId = rs.getString("device_id"),
+                                pairToken = rs.getString("pair_token"),
+                                sessionKey = rs.getString("session_key"),
+                                mqttPassword = rs.getString("mqtt_password"),
+                                expiresAt = rs.getLong("expires_at"),
+                            )
+                        }
+                        list
+                    }
+                }
+            }
+        }.getOrElse {
+            logger.warn("listPairSessions failed: {}", it.message)
+            emptyList()
+        }
+    }
+
+    /** 吊销时删除会话。 */
+    fun deletePairSession(deviceId: String) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("DELETE FROM pair_session WHERE device_id = ?").use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("deletePairSession failed for $deviceId: {}", it.message) }
     }
 
     private fun splitStatements(sql: String): List<String> {
@@ -247,22 +329,41 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
-    private fun seedAdminIfEmpty() {
-        val ds = dataSource ?: return
-        runCatching {
+    /**
+     * 管理员是否已初始化。DB 不可达时返回 true(fail-closed):
+     * 宁可不显示初始化界面,也不允许在状态未知时开放创建管理员的入口。
+     */
+    fun isAdminInitialized(): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return true
+        return runCatching {
             ds.connection.use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT COUNT(*) FROM admin_user").use { rs ->
-                        if (rs.next() && rs.getInt(1) == 0) {
-                            logger.warn("初始管理员账号: admin / admin123 请立即修改！")
-                            createAdmin("admin", "admin123", "admin")
-                        }
+                        rs.next() && rs.getInt(1) > 0
                     }
                 }
             }
-        }.onFailure {
-            logger.warn("seedAdminIfEmpty skipped (best-effort): {}", it.message)
+        }.getOrElse {
+            logger.warn("isAdminInitialized failed: {}", it.message)
+            true
         }
+    }
+
+    /**
+     * 首次初始化管理员(仅当 admin_user 为空时成功)。并发竞争依赖
+     * username 的 UNIQUE 约束:第二个插入者抛重复键异常返回 null。
+     */
+    fun createInitialAdmin(username: String, passwordPlain: String): AdminUser? {
+        val ds = dataSource ?: ensureDataSource() ?: return null
+        if (isAdminInitialized()) return null
+        return runCatching {
+            val admin = createAdmin(username, passwordPlain, "admin")
+            logger.info("initial admin '{}' created via /api/setup", username)
+            admin
+        }.onFailure {
+            // 并发竞争(UNIQUE 冲突)或 DB 异常都会走到这里
+            logger.warn("createInitialAdmin failed: {}", it.message)
+        }.getOrNull()
     }
 
     data class DeviceRow(
@@ -477,25 +578,23 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
-    fun upsertTask(task: Map<String, Any>): Int? {
+    /**
+     * 任务 upsert。id 为空走 INSERT(缺省字段用默认值);id 非空走 UPDATE,
+     * 请求中为 null 的字段保留库里原值(部分更新),行不存在返回 null。
+     */
+    fun upsertTask(req: com.adbcontrol.backend.model.TaskRequest): Int? {
         val ds = dataSource ?: ensureDataSource() ?: return null
         val now = System.currentTimeMillis()
         return runCatching {
             ds.connection.use { conn ->
-                val id = task["id"]?.toString()?.toLongOrNull()
-                val deviceId = task["deviceId"]?.toString() ?: task["device_id"]?.toString() ?: ""
-                val ruleType = task["ruleType"]?.toString() ?: task["rule_type"]?.toString() ?: "cron"
-                val cronExpr = task["cronExpr"]?.toString() ?: task["cron_expr"]?.toString() ?: ""
-                val commandJson = task["commandJson"]?.toString() ?: task["command_json"]?.toString() ?: task["payloadJson"]?.toString() ?: task["payload_json"]?.toString() ?: "{}"
-                val enabled = (task["enabled"] as? Boolean) ?: true
-                if (id == null) {
+                if (req.id == null) {
                     val sql = "INSERT INTO task (device_id, rule_type, cron_expr, command_json, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?)"
                     conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS).use { ps ->
-                        ps.setString(1, deviceId)
-                        ps.setString(2, ruleType)
-                        ps.setString(3, cronExpr)
-                        ps.setString(4, commandJson)
-                        ps.setBoolean(5, enabled)
+                        ps.setString(1, req.deviceId ?: "")
+                        ps.setString(2, req.ruleType ?: "cron")
+                        ps.setString(3, req.cronExpr ?: "")
+                        ps.setString(4, req.commandJson ?: "{}")
+                        ps.setBoolean(5, req.enabled ?: true)
                         ps.setLong(6, now)
                         ps.executeUpdate()
                         ps.generatedKeys.use { rs ->
@@ -503,16 +602,27 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                         }
                     }
                 } else {
+                    // 部分更新:先取原行,null 字段沿用旧值,避免只传 enabled 时清空其余列
+                    val existing = conn.prepareStatement(
+                        "SELECT device_id, rule_type, cron_expr, command_json, enabled FROM task WHERE task_id = ?"
+                    ).use { ps ->
+                        ps.setLong(1, req.id)
+                        ps.executeQuery().use { rs ->
+                            if (rs.next()) arrayOf(
+                                rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getBoolean(5)
+                            ) else null
+                        }
+                    } ?: return@runCatching null
                     val sql = "UPDATE task SET device_id=?, rule_type=?, cron_expr=?, command_json=?, enabled=? WHERE task_id=?"
                     conn.prepareStatement(sql).use { ps ->
-                        ps.setString(1, deviceId)
-                        ps.setString(2, ruleType)
-                        ps.setString(3, cronExpr)
-                        ps.setString(4, commandJson)
-                        ps.setBoolean(5, enabled)
-                        ps.setLong(6, id)
+                        ps.setString(1, req.deviceId ?: existing[0] as String)
+                        ps.setString(2, req.ruleType ?: existing[1] as String)
+                        ps.setString(3, req.cronExpr ?: existing[2] as String)
+                        ps.setString(4, req.commandJson ?: existing[3] as String)
+                        ps.setBoolean(5, req.enabled ?: existing[4] as Boolean)
+                        ps.setLong(6, req.id)
                         ps.executeUpdate()
-                        id.toInt()
+                        req.id.toInt()
                     }
                 }
             }
@@ -571,6 +681,263 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
     }
 
     /** Bug#24:应用关闭时释放 HikariCP 连接池。 */
+    // ---- 遥测 ingestor 写入(TelemetryIngestService 上行落库) ----
+    // 全部 best-effort:DB 不可达时仅告警,不拖垮 MQTT 消费线程。
+
+    /** status/{deviceId} 上行 → device_status 覆盖写 + device.last_seen/status 刷新。 */
+    fun upsertDeviceStatus(
+        deviceId: String,
+        battery: Int,
+        charging: Boolean,
+        network: String,
+        networkStrength: Int,
+        screenOn: Boolean,
+        foregroundPkg: String?,
+        lastSeen: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    """
+                    INSERT INTO device_status
+                      (device_id, online, battery, charging, network, network_strength, screen_on, foreground_pkg, last_seen)
+                    VALUES (?, TRUE, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      online = TRUE, battery = VALUES(battery), charging = VALUES(charging),
+                      network = VALUES(network), network_strength = VALUES(network_strength),
+                      screen_on = VALUES(screen_on), foreground_pkg = VALUES(foreground_pkg),
+                      last_seen = VALUES(last_seen)
+                    """.trimIndent()
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.setInt(2, battery)
+                    ps.setBoolean(3, charging)
+                    ps.setString(4, network)
+                    ps.setInt(5, networkStrength)
+                    ps.setBoolean(6, screenOn)
+                    ps.setString(7, foregroundPkg)
+                    ps.setLong(8, lastSeen)
+                    ps.executeUpdate()
+                }
+                conn.prepareStatement(
+                    "UPDATE device SET last_seen = ?, status = 'online' WHERE device_id = ?"
+                ).use { ps ->
+                    ps.setLong(1, lastSeen)
+                    ps.setString(2, deviceId)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("upsertDeviceStatus failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** health/{deviceId} 上行 → device_status 能力列守护更新。 */
+    fun applyHealth(
+        deviceId: String,
+        shizukuConnected: Boolean,
+        root: Boolean,
+        accessibility: Boolean,
+        deviceAdmin: Boolean,
+        androidVersion: String,
+        appVersion: String,
+        lastSeen: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    """
+                    INSERT INTO device_status
+                      (device_id, online, shizuku, root, accessibility, device_admin, android_version, app_version, last_seen)
+                    VALUES (?, TRUE, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      online = TRUE, shizuku = VALUES(shizuku), root = VALUES(root),
+                      accessibility = VALUES(accessibility), device_admin = VALUES(device_admin),
+                      android_version = VALUES(android_version), app_version = VALUES(app_version),
+                      last_seen = VALUES(last_seen)
+                    """.trimIndent()
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.setBoolean(2, shizukuConnected)
+                    ps.setBoolean(3, root)
+                    ps.setBoolean(4, accessibility)
+                    ps.setBoolean(5, deviceAdmin)
+                    ps.setString(6, androidVersion)
+                    ps.setString(7, appVersion)
+                    ps.setLong(8, lastSeen)
+                    ps.executeUpdate()
+                }
+                conn.prepareStatement(
+                    "UPDATE device SET last_seen = ?, status = 'online' WHERE device_id = ?"
+                ).use { ps ->
+                    ps.setLong(1, lastSeen)
+                    ps.setString(2, deviceId)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("applyHealth failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** location/{deviceId} 上行 → location_history 追加。 */
+    fun insertLocation(
+        deviceId: String,
+        userId: String?,
+        lat: Double,
+        lng: Double,
+        accuracy: Float,
+        speed: Float,
+        provider: String,
+        fenceEvent: String?,
+        reportedAt: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "INSERT INTO location_history (device_id, user_id, lat, lng, accuracy, speed, provider, fence_event, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    if (userId == null) ps.setNull(2, java.sql.Types.VARCHAR) else ps.setString(2, userId)
+                    ps.setDouble(3, lat)
+                    ps.setDouble(4, lng)
+                    ps.setFloat(5, accuracy)
+                    ps.setFloat(6, speed)
+                    ps.setString(7, provider)
+                    if (fenceEvent == null) ps.setNull(8, java.sql.Types.VARCHAR) else ps.setString(8, fenceEvent)
+                    ps.setLong(9, reportedAt)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("insertLocation failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** activity/{deviceId} 上行 → app_activity_log(UNIQUE 幂等)。 */
+    fun insertActivity(
+        deviceId: String,
+        userId: String?,
+        event: String,
+        pkg: String,
+        appName: String?,
+        durationMs: Long,
+        occurredAt: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "INSERT IGNORE INTO app_activity_log (device_id, user_id, event, pkg, app_name, duration_ms, occurred_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    if (userId == null) ps.setNull(2, java.sql.Types.VARCHAR) else ps.setString(2, userId)
+                    ps.setString(3, event)
+                    ps.setString(4, pkg)
+                    if (appName == null) ps.setNull(5, java.sql.Types.VARCHAR) else ps.setString(5, appName)
+                    ps.setLong(6, durationMs)
+                    ps.setLong(7, occurredAt)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("insertActivity failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** usage/{deviceId} 上行 → app_usage_daily(UNIQUE 复合键幂等)。 */
+    fun upsertUsageItem(
+        deviceId: String,
+        userId: String,
+        pkg: String,
+        usageMinutes: Int,
+        date: String,
+        uploadedAt: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    """
+                    INSERT INTO app_usage_daily (device_id, user_id, pkg, usage_minutes, date, uploaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE usage_minutes = VALUES(usage_minutes), uploaded_at = VALUES(uploaded_at)
+                    """.trimIndent()
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.setString(2, userId)
+                    ps.setString(3, pkg)
+                    ps.setInt(4, usageMinutes)
+                    ps.setString(5, date)
+                    ps.setLong(6, uploadedAt)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("upsertUsageItem failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** result/{deviceId} 上行 → execution_log(uq_msg_id 幂等)。 */
+    fun insertExecutionLog(
+        deviceId: String,
+        msgId: String,
+        success: Boolean,
+        output: String,
+        durationMs: Long,
+        executedAt: Long,
+    ) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "INSERT IGNORE INTO execution_log (task_id, device_id, msg_id, success, output, duration_ms, executed_at) VALUES (NULL, ?, ?, ?, ?, ?, ?)"
+                ).use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.setString(2, msgId)
+                    ps.setBoolean(3, success)
+                    ps.setString(4, output)
+                    ps.setLong(5, durationMs)
+                    ps.setLong(6, executedAt)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("insertExecutionLog failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** device/offline/{deviceId} LWT → 标记设备离线。 */
+    fun markOffline(deviceId: String, ts: Long) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "UPDATE device SET status = 'offline', last_seen = ? WHERE device_id = ?"
+                ).use { ps ->
+                    ps.setLong(1, ts)
+                    ps.setString(2, deviceId)
+                    ps.executeUpdate()
+                }
+                conn.prepareStatement(
+                    "UPDATE device_status SET online = FALSE, last_seen = ? WHERE device_id = ?"
+                ).use { ps ->
+                    ps.setLong(1, ts)
+                    ps.setString(2, deviceId)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("markOffline failed for {}: {}", deviceId, it.message) }
+    }
+
+    /** 管理员改密(/api/change-password),成功返回 true。 */
+    fun updateAdminPassword(adminId: Int, passwordHash: String): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("UPDATE admin_user SET password_hash = ? WHERE id = ?").use { ps ->
+                    ps.setString(1, passwordHash)
+                    ps.setInt(2, adminId)
+                    ps.executeUpdate() == 1
+                }
+            }
+        }.getOrElse {
+            logger.warn("updateAdminPassword failed for id={}: {}", adminId, it.message)
+            false
+        }
+    }
+
     override fun close() {
         dataSource?.let { ds ->
             runCatching { ds.close() }.onFailure { logger.warn("HikariCP close failed: {}", it.message) }
