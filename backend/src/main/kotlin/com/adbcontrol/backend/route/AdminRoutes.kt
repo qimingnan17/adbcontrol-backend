@@ -113,6 +113,14 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
             call.respond(mapOf("deleted" to n))
         }
 
+        // 任务通知签收列表(挂在任务详情);?taskId 缺省表示全部(含手动下发)
+        get("/api/task-acks") {
+            val taskId = call.request.queryParameters["taskId"]?.toLongOrNull()
+            call.respond(buildJsonObject {
+                put("items", db.listTaskAcks(taskId).toJsonElement())
+            })
+        }
+
         get("/api/pairing-tokens") {
             // includeUsed 是 query 参数,不是路由参数
             val all = call.request.queryParameters["includeUsed"] == "1"

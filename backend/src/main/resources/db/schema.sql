@@ -137,6 +137,19 @@ CREATE TABLE IF NOT EXISTS notification_log (
   INDEX idx_user_time (user_id, posted_at)
 );
 
+-- 任务通知签收回报(受控端 REMINDER_RESULT → ack_id 幂等,防 QoS 1 重发重复入库)
+CREATE TABLE IF NOT EXISTS task_ack (
+  id           BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  ack_id       VARCHAR(64)  NOT NULL,
+  task_id      BIGINT       NULL,
+  device_id    VARCHAR(64)  NOT NULL,
+  button_text  VARCHAR(128) NOT NULL,
+  acked_at     BIGINT       NOT NULL,
+  UNIQUE KEY uq_ack_id (ack_id),
+  INDEX idx_task (task_id),
+  INDEX idx_dev_time (device_id, acked_at)
+);
+
 -- Web 管理控制台管理员账号
 CREATE TABLE IF NOT EXISTS admin_user (
   id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

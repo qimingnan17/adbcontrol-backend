@@ -51,6 +51,9 @@ dependencies {
     // MQTT(遥测 ingestor,见 TelemetryIngestService)
     implementation(libs.paho.mqtt)
 
+    // cron 调度(TaskSchedulerService,UNIX 5 字段,与 shared 测试同口径)
+    implementation(libs.cron.utils)
+
     // 日志
     implementation(libs.logback.classic)
 

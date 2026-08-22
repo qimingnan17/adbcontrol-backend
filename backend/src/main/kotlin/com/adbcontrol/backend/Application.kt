@@ -14,6 +14,7 @@ import com.adbcontrol.backend.service.DatabaseService
 import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.EmqxProxyService
 import com.adbcontrol.backend.service.PairingService
+import com.adbcontrol.backend.service.TaskSchedulerService
 import com.adbcontrol.backend.service.TelemetryIngestService
 import com.adbcontrol.backend.service.UpdateService
 import io.ktor.server.auth.authenticate
@@ -97,11 +98,14 @@ fun Application.module() {
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
+    // cron 调度器:定时扫 task 表,通知走 reminder/ 通道,命令走 cmd/
+    val taskScheduler = TaskSchedulerService(databaseService, commandBridge)
 
     configureSecurity(databaseService)
 
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
+        taskScheduler.close()
         telemetryIngest.close()
         emqxProxy.close()
         databaseService.close()
@@ -109,6 +113,7 @@ fun Application.module() {
 
     // 启动遥测 ingestor(凭据缺失时内部打 warning 并跳过,不影响其余路由)。
     telemetryIngest.start()
+    taskScheduler.start()
 
     // 路由:pair / renew / update / emqx-proxy / health + auth + admin
     routing {

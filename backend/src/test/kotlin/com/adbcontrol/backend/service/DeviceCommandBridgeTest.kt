@@ -74,6 +74,77 @@ class DeviceCommandBridgeTest {
     }
 
     @Test
+    fun `app_time_limit maps to APP_TIME setLimit`() {
+        val m = newBridge().mapCommand("app_time_limit", mapOf("packageName" to "com.douyin.android", "minutes" to "60"))
+        val mapped = assertIs<DeviceCommandBridge.MapResult.Mapped>(m)
+        assertEquals(CommandCategory.APP_TIME, mapped.command.category)
+        assertEquals("setLimit", mapped.command.action)
+        assertEquals("60", mapped.command.params["minutes"])
+        assertEquals("com.douyin.android", mapped.command.params["pkg"])
+    }
+
+    @Test
+    fun `app_time_window maps start_end params`() {
+        val m = newBridge().mapCommand(
+            "app_time_window",
+            mapOf("packageName" to "com.tencent.mm", "startTime" to "22:00", "endTime" to "07:00"),
+        )
+        val mapped = assertIs<DeviceCommandBridge.MapResult.Mapped>(m)
+        assertEquals("setWindow", mapped.command.action)
+        assertEquals("22:00", mapped.command.params["start"])
+        assertEquals("07:00", mapped.command.params["end"])
+    }
+
+    @Test
+    fun `notify payload keeps custom button texts and ack flag`() {
+        val b = newBridge().buildReminderPayload(
+            mapOf(
+                "title" to "该睡觉了",
+                "text" to "晚安",
+                "buttons" to """["收到","立刻睡觉"]""",
+                "expectAck" to "true",
+            ),
+            taskId = 42L,
+        )
+        val ready = assertIs<DeviceCommandBridge.ReminderBuild.Ready>(b)
+        assertEquals("该睡觉了", ready.payload.title)
+        assertEquals(listOf("收到", "立刻睡觉"), ready.payload.buttons)
+        assertTrue(ready.payload.expectAck)
+        assertEquals(42L, ready.payload.taskId)
+    }
+
+    @Test
+    fun `notify without title rejected as MissingField`() {
+        val b = newBridge().buildReminderPayload(mapOf("text" to "only text"))
+        val missing = assertIs<DeviceCommandBridge.ReminderBuild.MissingField>(b)
+        assertEquals("title", missing.field)
+    }
+
+    @Test
+    fun `notify buttons are trimmed and capped at 2`() {
+        val b = newBridge().buildReminderPayload(
+            mapOf("title" to "t", "buttons" to """[" a "," b ","c"]"""),
+        )
+        val ready = assertIs<DeviceCommandBridge.ReminderBuild.Ready>(b)
+        assertEquals(listOf("a", "b"), ready.payload.buttons)
+    }
+
+    @Test
+    fun `reminder envelope verifies like command envelope`() {
+        val bridge = newBridge()
+        val sessionKey = sampleSessionKey()
+        val ready = assertIs<DeviceCommandBridge.ReminderBuild.Ready>(
+            bridge.buildReminderPayload(mapOf("title" to "测试"))
+        )
+        val env = bridge.buildReminderEnvelope(ready.payload, sessionKey, id = "rem-test1", timestamp = System.currentTimeMillis())
+        assertEquals("REMINDER", env.type)
+        assertNotNull(env.signature)
+        val data = HmacSigner.buildSigningData(env.payload, env.id, env.timestamp)
+        assertTrue(HmacSigner.verify(data, sessionKey, env.signature!!))
+        assertTrue(HmacSigner.isWithinReplayWindow(env.timestamp))
+    }
+
+    @Test
     fun `signed envelope passes controlled MessageCodec verification rules`() {
         val bridge = newBridge()
         val sessionKey = sampleSessionKey()
