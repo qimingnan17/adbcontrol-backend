@@ -86,12 +86,23 @@ fly secrets set \
   ADB_MYSQL_PORT=3311 \
   ADB_MYSQL_NAME=slss12 \
   ADB_MYSQL_USER=slss12 \
-  ADB_MYSQL_PASSWORD=kYxWgH8ySV0tGiqN \
+  ADB_MYSQL_PASSWORD=<从SQLPub控制台复制> \
   ADB_SERVER_URL=https://api.yourdomain.com \
   SESSION_SECRET=$(openssl rand -hex 48)
 ```
 
 **⚠️ 提示**：`SESSION_SECRET` 一定要用随机生成的 64 字符，不要用固定值，否则 Session 签名有被伪造的风险。
+
+如果需要让 Dashboard/设备详情显示**实时在线状态、电量、命令历史**(即"遥测落库"),
+还要额外注入下列两个 secret —— 先去 EMQX 控制台手工建一个专用账号(建议名 `ingestor`),
+并给它授予 `status/+ health/+ location/+ activity/+ usage/+ result/+ device/offline/+`
+的订阅 ACL,再填进：
+
+```bash
+fly secrets set \
+  ADB_EMQX_INGEST_USERNAME=ingestor \
+  ADB_EMQX_INGEST_PASSWORD=<你刚在 EMQX 控制台设的密码>
+```
 
 注入完可以用 `fly secrets list` 检查是否都进去了。
 
@@ -171,10 +182,7 @@ npx wrangler pages publish ./dist --project-name=adbcontrol-web
 
 ### 3.5 登录页测试
 
-浏览器打开 `https://web.yourdomain.com`（或 Pages 给的 `https://adbcontrol-web.pages.dev`），使用默认管理员账号登录：
-
-- 用户名：`admin`
-- 密码：`admin123`
+浏览器打开 `https://web.yourdomain.com`（或 Pages 给的 `https://adbcontrol-web.pages.dev`），使用初始管理员账号登录（首次部署时后端自动生成随机密码，见 5.3 节，用 `fly logs` 查看）。
 
 如果能成功进入 Dashboard，说明前后端联调畅通。
 
@@ -275,19 +283,38 @@ npx wrangler pages publish ./dist --project-name=adbcontrol-web
 
 或者如果 Pages 已经连了 Git 仓库，直接 push 到 `main` 就会自动构建部署。
 
-### 5.3 初始密码修改
+### 5.3 初始密码
 
-系统默认管理员账号是 `admin / admin123`，登录后请尽快修改。
+首次部署且 `admin_user` 表为空时,后端会自动创建 `admin` 账号并生成**随机初始密码**,只在启动日志中显示一次:
 
-- 如果后端已实现 `POST /api/change-password` 接口：登录后调用该接口修改。
-- **⚠️ 提示**：后端密码修改接口后续开放，当前如需修改直接在 `admin_user` 表执行 UPDATE：
-
-```sql
--- 用你自己算出来的新 password_hash 替换下面的值
--- 注意：password_hash 需要用后端 PasswordHasher 的算法（BCrypt）生成
-UPDATE admin_user 
-SET password_hash = '$2a$10$新的BCrypt哈希值' 
-WHERE username = 'admin';
+```
+初始管理员账号已创建: admin / xxxxxxxxxxxxxxxx (仅显示此一次,请立即登录修改)
 ```
 
-建议用后端单元测试或写个临时小脚本调用 `PasswordHasher.hash("你的新密码")` 生成 hash，不要在线 BCrypt 生成器（怕有后门）。
+查看方式(Fly 部署):
+
+```bash
+fly logs -a adbcontrol-backend | grep "初始管理员"
+```
+
+拿到密码后登录 Web 控制台 → 右上角头像菜单 → **修改密码** 换成自己的强密码。
+
+后端已实现 `POST /api/change-password`(受登录态保护,按用户名限流)。
+
+纯手工 curl 路线:
+
+```bash
+# 先登录拿 cookie
+curl -c cookiejar -X POST https://api.yourdomain.com/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"启动日志里的随机密码"}'
+
+# 用 cookie 改密
+curl -b cookiejar -X POST https://api.yourdomain.com/api/change-password \
+  -H 'Content-Type: application/json' \
+  -d '{"oldPassword":"启动日志里的随机密码","newPassword":"你的新密码至少8位"}'
+```
+
+**⚠️ 提示**：如果忘了新密码只能直连 MySQL 重算：`admin_user` 里的 `password_hash` 用 BCrypt，
+不要直接把明文写进 SQL；正确做法是起一个本地后端临时调 `PasswordHasher.hash("新密码")` 生成哈希
+再 `UPDATE`，或用上面 API 在能登录的前提下自助换掉。

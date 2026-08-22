@@ -13,6 +13,14 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import io.ktor.http.*
+import kotlinx.serialization.Serializable
+
+/** 改密请求体(仅已登录管理员改自己)。 */
+@Serializable
+private data class ChangePasswordRequest(
+    val oldPassword: String,
+    val newPassword: String,
+)
 
 fun Route.authRoutes(db: DatabaseService) {
     post("/api/login") {
@@ -58,6 +66,50 @@ fun Route.authRoutes(db: DatabaseService) {
         }
         post("/api/logout") {
             call.sessions.clear<UserSession>()
+            call.respond(mapOf("ok" to true))
+        }
+
+        // 仅允许"登录态管理员改自己",pin 到 username 维度上参与限流。
+        post("/api/change-password") {
+            val sess = call.sessions.get<UserSession>()!!
+            val username = sess.username
+            if (LoginRateLimiter.isLocked("changepwd:$username")) {
+                call.respond(
+                    HttpStatusCode.TooManyRequests,
+                    mapOf("message" to "原密码错误次数过多,请 5 分钟后再试")
+                )
+                return@post
+            }
+            val req = runCatching { call.receive<ChangePasswordRequest>() }.getOrNull()
+            if (req == null || req.oldPassword.isBlank() || req.newPassword.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("message" to "oldPassword / newPassword 不能为空"))
+                return@post
+            }
+            if (req.newPassword.length < 8) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("message" to "新密码至少 8 位"))
+                return@post
+            }
+            if (req.newPassword == req.oldPassword) {
+                call.respond(HttpStatusCode.BadRequest, mapOf("message" to "新密码不能与原密码相同"))
+                return@post
+            }
+            val admin = db.findAdminByUsername(username)
+            if (admin == null) {
+                call.sessions.clear<UserSession>()
+                call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "当前账号不存在"))
+                return@post
+            }
+            if (!PasswordHasher.verify(req.oldPassword, admin.passwordHash)) {
+                LoginRateLimiter.fail("changepwd:$username")
+                call.respond(HttpStatusCode.BadRequest, mapOf("message" to "原密码不正确"))
+                return@post
+            }
+            val ok = db.updateAdminPassword(admin.id, PasswordHasher.hash(req.newPassword))
+            if (!ok) {
+                call.respond(HttpStatusCode.InternalServerError, mapOf("message" to "密码更新失败,请稍后重试"))
+                return@post
+            }
+            LoginRateLimiter.clear("changepwd:$username")
             call.respond(mapOf("ok" to true))
         }
     }

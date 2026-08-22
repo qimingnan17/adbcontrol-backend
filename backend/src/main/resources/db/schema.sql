@@ -147,3 +147,16 @@ CREATE TABLE IF NOT EXISTS admin_user (
   last_login_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
   totp_secret   VARCHAR(64) NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 配对会话(设备临时 MQTT 凭证 + 长期 sessionKey)
+-- 后端重启后由此恢复完整的配对关系,避免已配对设备被迫重新扫码 pairing。
+-- 安全注意:session_key / mqtt_password 属于敏感凭证,后续如需更强保护可加密钥包装(wrap)
+CREATE TABLE IF NOT EXISTS pair_session (
+  device_id     VARCHAR(64)  PRIMARY KEY,
+  pair_token    VARCHAR(64)  NOT NULL,
+  session_key   VARCHAR(128) NOT NULL,
+  mqtt_password VARCHAR(128) NOT NULL,
+  expires_at    BIGINT       NOT NULL,
+  created_at    BIGINT       NOT NULL,
+  updated_at    BIGINT       NOT NULL
+);

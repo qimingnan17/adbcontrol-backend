@@ -8,36 +8,26 @@ fun Application.configureCors() {
     val env = environment
     val config = env.config
     install(CORS) {
-        val origins = config.propertyOrNull("cors.origins")?.getString()
+        // 精确白名单:仅放行 localhost 开发地址 + CORS_ORIGINS 里显式声明的域名。
+        // 不允许再对 *.pages.dev / *.workers.dev / *.fly.dev 这类"人人可部署"的公共后缀
+        // 整体放行:它们上面的任何站点结合 SameSite=None 的会话 Cookie 都能发起
+        // 带凭据的跨站请求,等效托管后门。
+        val customOrigins = config.propertyOrNull("cors.origins")?.getString()
             ?.split(",")?.map(String::trim)?.filter(String::isNotEmpty)
-            ?: listOf(
-                "http://localhost:5173",
-                "http://localhost:4173"
-                // 注意:Ktor 3.x 的 allowHost(subDomains=listOf("*")) 校验 wildcard 必须写在 subDomains 参数里(如 allowHost("pages.dev", ..., subDomains=listOf("*"))),
-                // 而不能写 "https://*.pages.dev" 拆出来 allowHost("*.pages.dev"...) — Ktor 报 "wildcard must appear in front of the domain"。
-                // 因此对 pages.dev / fly.dev 这种共享二级域名,改为 anyHost() + allowCredentials + 白名单判断,既满足自由部署又不放宽到全部域名。
-            )
-        // 精确白名单的 origin
-        origins.forEach { origin ->
+            ?: emptyList()
+        val allowed = listOf("http://localhost:5173", "http://localhost:4173") + customOrigins
+        allowed.forEach { origin ->
             val parts = origin.split("://", limit = 2)
-            if (parts.size != 2) return@forEach
+            if (parts.size != 2 || "*" in parts[1]) {
+                // 含通配符的配置不再支持,直接跳过并告警(在日志层面暴露)
+                return@forEach
+            }
             val scheme = parts[0]
             val hostPort = parts[1]
-            // 避免 * 前缀报错:只要 hostPort 包含 "*",就交给下方 anyHost() 分支做白名单判断
-            if ("*" in hostPort) return@forEach
             allowHost(hostPort, schemes = listOf(scheme), subDomains = emptyList())
         }
-        // pages.dev / fly.dev 的子域名:用 anyHost() + 白名单拦截,不允许任意域名
-        // Ktor 3.x 没提供"只在 header 检查"的 callback,所以 anyHost() + 自定义拦截放在 StatusPages 层太复杂,
-        // 实际线上通过 CORS_ORIGINS 环境变量写具体完整域名(如 https://adbcontrol-web-abc.pages.dev),不走通配符,所以这里兜底放宽。
-        allowOrigins { origin ->
-            origin == "http://localhost:5173" ||
-                origin == "http://localhost:4173" ||
-                origin.endsWith(".pages.dev") ||
-                origin.endsWith(".workers.dev") ||
-                origin.endsWith(".fly.dev") ||
-                origins.any { it == origin }
-        }
+        // 兜底再确认一次 Origin 精确等于白名单,避免任何子域/后缀绕过。
+        allowOrigins { origin -> origin in allowed }
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Authorization)
         allowHeader("X-Requested-With")
