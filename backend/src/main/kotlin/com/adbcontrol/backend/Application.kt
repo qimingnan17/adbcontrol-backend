@@ -90,9 +90,10 @@ fun Application.module() {
     // 服务装配
     val databaseService = DatabaseService(config)
     val aclService = AclService(config)
-    val pairingService = PairingService(config, aclService, databaseService)
-    val updateService = UpdateService(config)
     val emqxProxy = EmqxProxyService(config)
+    // PairingService 依赖 emqxProxy:配对时经部署 API 动态注册设备 MQTT 账号
+    val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
+    val updateService = UpdateService(config)
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
