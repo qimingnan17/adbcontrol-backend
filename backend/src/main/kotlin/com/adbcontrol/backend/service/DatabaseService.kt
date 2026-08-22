@@ -366,6 +366,8 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }.getOrNull()
     }
 
+    /** /api/devices 响应体,需可序列化(缺 @Serializable 时 respond 500)。 */
+    @kotlinx.serialization.Serializable
     data class DeviceRow(
         val deviceId: String,
         val name: String,

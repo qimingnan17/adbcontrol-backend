@@ -275,6 +275,8 @@ class PairingService(
         sessions.entries.removeAll { (_, s) -> now > s.expiresAt + RENEW_GRACE_MS }
     }
 
+    /** 响应体走 kotlinx 序列化,必须可序列化(缺 @Serializable 时 respond 500)。 */
+    @kotlinx.serialization.Serializable
     data class GeneratedPairToken(
         val pairToken: String,
         val deviceId: String,
