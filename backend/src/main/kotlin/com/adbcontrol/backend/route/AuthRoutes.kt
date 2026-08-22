@@ -22,7 +22,63 @@ private data class ChangePasswordRequest(
     val newPassword: String,
 )
 
+/** 首次初始化管理员请求体(仅当 admin_user 为空时可用)。 */
+@Serializable
+private data class SetupRequest(
+    val username: String,
+    val password: String,
+)
+
 fun Route.authRoutes(db: DatabaseService) {
+    /**
+     * 首次访问初始化流程:前端据此在登录页切换"初始化管理员"模式。
+     * 已初始化后此接口只回 true,不再暴露任何创建入口。
+     */
+    get("/api/setup-status") {
+        call.respond(mapOf("initialized" to db.isAdminInitialized()))
+    }
+
+    post("/api/setup") {
+        val remoteIp = call.request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
+            ?: call.request.local.remoteAddress
+        if (LoginRateLimiter.isLocked("setup:ip:$remoteIp")) {
+            call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "初始化失败次数过多，请 5 分钟后再试"))
+            return@post
+        }
+        // 竞态兜底:任何时点管理员已存在即拒绝,不依赖客户端状态
+        if (db.isAdminInitialized()) {
+            call.respond(HttpStatusCode.Conflict, mapOf("message" to "系统已初始化，请直接登录"))
+            return@post
+        }
+        val req = runCatching { call.receive<SetupRequest>() }.getOrNull()
+        if (req == null) {
+            LoginRateLimiter.fail("setup:ip:$remoteIp")
+            call.respond(HttpStatusCode.BadRequest, mapOf("message" to "请求体格式错误"))
+            return@post
+        }
+        val username = req.username.trim()
+        if (!Regex("^[A-Za-z0-9_.-]{3,32}$").matches(username)) {
+            LoginRateLimiter.fail("setup:ip:$remoteIp")
+            call.respond(HttpStatusCode.BadRequest, mapOf("message" to "用户名需为 3-32 位字母/数字/_.- 组合"))
+            return@post
+        }
+        if (req.password.length < 8) {
+            LoginRateLimiter.fail("setup:ip:$remoteIp")
+            call.respond(HttpStatusCode.BadRequest, mapOf("message" to "密码至少 8 位"))
+            return@post
+        }
+        val admin = db.createInitialAdmin(username, req.password)
+        if (admin == null) {
+            // 并发竞争被 UNIQUE 拦下或 DB 异常:一律按已初始化处理
+            call.respond(HttpStatusCode.Conflict, mapOf("message" to "系统已初始化，请直接登录"))
+            return@post
+        }
+        LoginRateLimiter.clear("setup:ip:$remoteIp")
+        db.updateAdminLastLogin(admin.id)
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
+    }
+
     post("/api/login") {
         val remoteIp = call.request.header("X-Forwarded-For")?.split(",")?.first()?.trim() ?: call.request.local.remoteAddress
         if (LoginRateLimiter.isLocked("ip:$remoteIp")) {

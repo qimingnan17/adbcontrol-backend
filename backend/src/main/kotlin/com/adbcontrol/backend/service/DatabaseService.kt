@@ -31,7 +31,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         } else {
             dataSource = createPool(dbConfig)
             runSchema()
-            seedAdminIfEmpty()
+            // 管理员账号不在启动时种入:由 /api/setup 在首次访问时初始化(见 AuthRoutes)
         }
     }
 
@@ -69,7 +69,6 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             if (ds != null) {
                 dataSource = ds
                 runSchema()
-                seedAdminIfEmpty()
             }
             ds
         }
@@ -330,30 +329,41 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
-    private fun seedAdminIfEmpty() {
-        val ds = dataSource ?: return
-        runCatching {
+    /**
+     * 管理员是否已初始化。DB 不可达时返回 true(fail-closed):
+     * 宁可不显示初始化界面,也不允许在状态未知时开放创建管理员的入口。
+     */
+    fun isAdminInitialized(): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return true
+        return runCatching {
             ds.connection.use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT COUNT(*) FROM admin_user").use { rs ->
-                        if (rs.next() && rs.getInt(1) == 0) {
-                            // 固定弱口令(admin123)会随公开文档泄漏,首启改为随机密码并只打一次日志。
-                            val initialPassword = generateRandomPassword()
-                            createAdmin("admin", initialPassword, "admin")
-                            logger.warn("初始管理员账号已创建: admin / {} (仅显示此一次,请立即登录修改)", initialPassword)
-                        }
+                        rs.next() && rs.getInt(1) > 0
                     }
                 }
             }
-        }.onFailure {
-            logger.warn("seedAdminIfEmpty skipped (best-effort): {}", it.message)
+        }.getOrElse {
+            logger.warn("isAdminInitialized failed: {}", it.message)
+            true
         }
     }
 
-    private fun generateRandomPassword(): String {
-        val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
-        val random = java.security.SecureRandom()
-        return buildString { repeat(16) { append(alphabet[random.nextInt(alphabet.length)]) } }
+    /**
+     * 首次初始化管理员(仅当 admin_user 为空时成功)。并发竞争依赖
+     * username 的 UNIQUE 约束:第二个插入者抛重复键异常返回 null。
+     */
+    fun createInitialAdmin(username: String, passwordPlain: String): AdminUser? {
+        val ds = dataSource ?: ensureDataSource() ?: return null
+        if (isAdminInitialized()) return null
+        return runCatching {
+            val admin = createAdmin(username, passwordPlain, "admin")
+            logger.info("initial admin '{}' created via /api/setup", username)
+            admin
+        }.onFailure {
+            // 并发竞争(UNIQUE 冲突)或 DB 异常都会走到这里
+            logger.warn("createInitialAdmin failed: {}", it.message)
+        }.getOrNull()
     }
 
     data class DeviceRow(
