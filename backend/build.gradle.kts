@@ -48,6 +48,9 @@ dependencies {
     implementation(libs.hikari)
     implementation(libs.mysql.connector)
 
+    // MQTT(遥测 ingestor,见 TelemetryIngestService)
+    implementation(libs.paho.mqtt)
+
     // 日志
     implementation(libs.logback.classic)
 

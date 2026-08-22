@@ -13,7 +13,7 @@
 #   ADB_MYSQL_PORT=3311 \
 #   ADB_MYSQL_NAME=slss12 \
 #   ADB_MYSQL_USER=slss12 \
-#   ADB_MYSQL_PASSWORD=kYxWgH8ySV0tGiqN \
+#   ADB_MYSQL_PASSWORD=从SQLPub控制台复制 \
 #   ADB_SERVER_URL=https://api.yourdomain.com \
 #   SESSION_SECRET=openssl rand -hex 48（随机64字符）
 
@@ -24,10 +24,15 @@ primary_region = "sin"
   dockerfile = "Dockerfile"
 
 [env]
-  ADB_SERVER_URL = "https://你的后端域名"
+  # 配对 QR 码里写入的后端地址,必须是真实可访问的域名(原为占位符会导致 QR 指向假域名)
+  ADB_SERVER_URL = "https://adbcontrol-backend.fly.dev"
   PORT = "8080"
   KTOR_ENV = "production"
   SESSION_SECURE = "true"
+  # CORS 白名单(前端 Cloudflare Pages 域名)。取消注释并把域名换成你的 Pages 项目实际域名,
+  # 或用 `fly secrets set CORS_ORIGINS=...` 注入(secrets 优先级高于此处 [env])。
+  # 不配置则只放行 localhost,Pages 上的前端登录会被 CORS 拦截。
+  # CORS_ORIGINS = "https://adbcontrol-web.pages.dev"
 
 [[services]]
   internal_port = 8080

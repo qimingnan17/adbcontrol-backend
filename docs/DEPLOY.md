@@ -86,12 +86,23 @@ fly secrets set \
   ADB_MYSQL_PORT=3311 \
   ADB_MYSQL_NAME=slss12 \
   ADB_MYSQL_USER=slss12 \
-  ADB_MYSQL_PASSWORD=kYxWgH8ySV0tGiqN \
+  ADB_MYSQL_PASSWORD=<从SQLPub控制台复制> \
   ADB_SERVER_URL=https://api.yourdomain.com \
   SESSION_SECRET=$(openssl rand -hex 48)
 ```
 
 **⚠️ 提示**：`SESSION_SECRET` 一定要用随机生成的 64 字符，不要用固定值，否则 Session 签名有被伪造的风险。
+
+如果需要让 Dashboard/设备详情显示**实时在线状态、电量、命令历史**(即"遥测落库"),
+还要额外注入下列两个 secret —— 先去 EMQX 控制台手工建一个专用账号(建议名 `ingestor`),
+并给它授予 `status/+ health/+ location/+ activity/+ usage/+ result/+ device/offline/+`
+的订阅 ACL,再填进：
+
+```bash
+fly secrets set \
+  ADB_EMQX_INGEST_USERNAME=ingestor \
+  ADB_EMQX_INGEST_PASSWORD=<你刚在 EMQX 控制台设的密码>
+```
 
 注入完可以用 `fly secrets list` 检查是否都进去了。
 
@@ -171,10 +182,7 @@ npx wrangler pages publish ./dist --project-name=adbcontrol-web
 
 ### 3.5 登录页测试
 
-浏览器打开 `https://web.yourdomain.com`（或 Pages 给的 `https://adbcontrol-web.pages.dev`），使用默认管理员账号登录：
-
-- 用户名：`admin`
-- 密码：`admin123`
+浏览器打开 `https://web.yourdomain.com`（或 Pages 给的 `https://adbcontrol-web.pages.dev`）。首次部署会进入"设置管理员账号"初始化界面（见 5.3 节），设置后自动进入 Dashboard。
 
 如果能成功进入 Dashboard，说明前后端联调畅通。
 
@@ -275,19 +283,22 @@ npx wrangler pages publish ./dist --project-name=adbcontrol-web
 
 或者如果 Pages 已经连了 Git 仓库，直接 push 到 `main` 就会自动构建部署。
 
-### 5.3 初始密码修改
+### 5.3 初始密码(首次访问时在前端设置)
 
-系统默认管理员账号是 `admin / admin123`，登录后请尽快修改。
+首次部署时后端**不再自动种入任何管理员账号**(`admin_user` 表为空)。打开前端页面会自动检测到未初始化状态,登录页切换为"首次使用:请设置管理员账号"界面:
 
-- 如果后端已实现 `POST /api/change-password` 接口：登录后调用该接口修改。
-- **⚠️ 提示**：后端密码修改接口后续开放，当前如需修改直接在 `admin_user` 表执行 UPDATE：
+1. 填写后端地址、管理员用户名(3-32 位字母/数字/`_.-`)和密码(至少 8 位)
+2. 点击"初始化并进入控制台",后端创建唯一管理员并直接建立登录态
 
-```sql
--- 用你自己算出来的新 password_hash 替换下面的值
--- 注意：password_hash 需要用后端 PasswordHasher 的算法（BCrypt）生成
-UPDATE admin_user 
-SET password_hash = '$2a$10$新的BCrypt哈希值' 
-WHERE username = 'admin';
-```
+相关接口:
 
-建议用后端单元测试或写个临时小脚本调用 `PasswordHasher.hash("你的新密码")` 生成 hash，不要在线 BCrypt 生成器（怕有后门）。
+- `GET /api/setup-status` — 返回 `{ initialized: bool }`,前端据此切换界面
+- `POST /api/setup` — **仅当 `admin_user` 表为空时可用**,已初始化后返回 409;按 IP 限流,并发竞争由 `username` 的 UNIQUE 约束兜底
+
+安全性说明:初始化入口只在管理员表为空的窗口期开放。若部署到公网,请在部署完成后尽快完成首次初始化,避免被他人抢注。已初始化的系统此接口永久关闭。
+
+如果需要重置回未初始化状态(例如忘记了密码且无法找回),直连 MySQL 执行 `DELETE FROM admin_user;` 后重新打开前端即可。
+
+**⚠️ 提示**：如果忘了新密码只能直连 MySQL 重算：`admin_user` 里的 `password_hash` 用 BCrypt，
+不要直接把明文写进 SQL；正确做法是起一个本地后端临时调 `PasswordHasher.hash("新密码")` 生成哈希
+再 `UPDATE`，或用上面 API 在能登录的前提下自助换掉。

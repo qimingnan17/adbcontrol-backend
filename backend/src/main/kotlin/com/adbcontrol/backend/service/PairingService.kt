@@ -22,8 +22,10 @@ import java.util.concurrent.ConcurrentHashMap
  *    + 长期 sessionKey(随机 32B Base64)→ 写 EMQX ACL → 返回 PairingResponse(broker+r2+sessionKey+7 天过期)。
  * 2. POST /renew:用 pairToken 证明身份 → 签发新 MQTT 密码 → 返回 RenewResponse。
  *
- * 开发期:pair token 与 session 状态存内存(ConcurrentHashMap);生产可落 DB。
- * 凭证长期落盘由被控端 EncryptedFile 完成,后端只签发不存储明文长期凭证。
+ * 持久化:pair session 落 MySQL pair_session 表(启动时恢复),生产部署重启不丢配对。
+ * pair token 本身生命周期短(默认 10 分钟),仍存内存即可,重启后只需重新生成。
+ * 被控端凭证长期落盘由 EncryptedFile 完成后端只签发,不存储明文长期凭证之外的敏感数据
+ * (mqtt_password 需随会话存续以便 renew 展示,但配对完成后仅 sessionKey 长期有效)。
  */
 class PairingService(
     private val config: BackendConfig,
@@ -53,10 +55,26 @@ class PairingService(
     private val sessions = ConcurrentHashMap<String, SessionRecord>()
 
     init {
-        // Bug#1:演示 token 仅在显式开启或开发域名下注入,生产域名不注入后门。
-        val seedDemo = System.getenv("ADB_SEED_DEMO_TOKEN")?.toBoolean() == true
-            || config.serverUrl.contains("example.com")
-            || config.serverUrl.contains("localhost")
+        // 启动时从 pair_session 表恢复配对会话(Bug#25 修复:重启后丢配对)。
+        // DB 可用时覆盖内存;DB 不可达时 pass-through,与 memoryOnly 退化为原行为一致。
+        val restored = databaseService.listPairSessions()
+        restored.forEach { row ->
+            sessions[row.deviceId] = SessionRecord(
+                deviceId = row.deviceId,
+                pairToken = row.pairToken,
+                sessionKey = row.sessionKey,
+                mqttPassword = row.mqttPassword,
+                expiresAt = row.expiresAt,
+            )
+        }
+        if (restored.isNotEmpty()) {
+            logger.info("Restored {} pairing session(s) from DB", restored.size)
+        }
+
+        // Bug#1:演示 token 仅在显式设置 ADB_SEED_DEMO_TOKEN=true 时注入。
+        // 不再按 serverUrl 域名隐式开启 —— 默认 serverUrl 恰好是 example.com,
+        // 会导致忘记配置 ADB_SERVER_URL 的生产实例带着全平台已知的 pt_demo_001 后门上线。
+        val seedDemo = System.getenv("ADB_SEED_DEMO_TOKEN")?.trim()?.lowercase() == "true"
         if (seedDemo) {
             val demo = "pt_demo_001"
             val now = System.currentTimeMillis()
@@ -148,6 +166,21 @@ class PairingService(
             // 写 EMQX ACL(防越权 topic)
             aclService.applyForDevice(payload.deviceId)
 
+            // 配对会话持久化(失败不影响配对流程,DB 不可达则退回原来的内存-only 模式)
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    databaseService.upsertPairSession(
+                        DatabaseService.PairSessionRow(
+                            deviceId = payload.deviceId,
+                            pairToken = payload.pairToken,
+                            sessionKey = sessionKey,
+                            mqttPassword = mqttPassword,
+                            expiresAt = expiresAt,
+                        )
+                    )
+                }.onFailure { logger.warn("persist pair session failed (best-effort): {}", it.message) }
+            }
+
             // 设备台账入库(幂等,失败不影响配对)
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -207,7 +240,7 @@ class PairingService(
             val newExpiresAt = now + BackendConstants.CREDENTIAL_TTL_MS
             s.mqttPassword = newPassword
             s.expiresAt = newExpiresAt
-            outcome = RenewResult.Ok(
+                outcome = RenewResult.Ok(
                 RenewResponse(
                     broker = config.buildBroker("${config.emqxAppId}@${req.deviceId}", newPassword),
                     expiresAt = newExpiresAt,
@@ -215,6 +248,23 @@ class PairingService(
             )
             s
         } ?: return RenewResult.Fail(PairingError("DEVICE_NOT_FOUND", "未找到配对会话"))
+
+        // Bug#25:renew 后同步更新 DB 里的 mqtt_password 与 expires_at,避免重启后倒退
+        if (outcome is RenewResult.Ok) {
+            runCatching {
+                sessions[req.deviceId]?.let { s ->
+                    databaseService.upsertPairSession(
+                        DatabaseService.PairSessionRow(
+                            deviceId = s.deviceId,
+                            pairToken = s.pairToken,
+                            sessionKey = s.sessionKey,
+                            mqttPassword = s.mqttPassword,
+                            expiresAt = s.expiresAt,
+                        )
+                    )
+                }
+            }.onFailure { logger.warn("persist renewed session failed (best-effort): {}", it.message) }
+        }
 
         return outcome ?: RenewResult.Fail(PairingError("DEVICE_NOT_FOUND", "未找到配对会话"))
     }
@@ -261,24 +311,39 @@ class PairingService(
     }
 
     fun listPairingTokens(includeUsed: Boolean = false): List<Map<String, Any>> =
-        tokens.values.mapNotNull {
-            if (!includeUsed && it.usedAt != 0L) null
+        tokens.entries.mapNotNull { (tk, rec) ->
+            if (!includeUsed && rec.usedAt != 0L) null
             else mapOf(
-                "pairToken" to it.deviceId,
-                "deviceId" to it.deviceId,
-                "deviceName" to (it.deviceName ?: ""),
-                "createdAt" to it.createdAt,
-                "expiresAt" to it.expiresAt,
-                "usedAt" to it.usedAt,
-                "expired" to (System.currentTimeMillis() > it.expiresAt)
+                // 已使用的令牌不再外泄明文(配对已完成,展示已无意义),未使用的保留以便重发/补扫码
+                "pairToken" to (if (rec.usedAt == 0L) tk else ""),
+                "deviceId" to rec.deviceId,
+                "deviceName" to (rec.deviceName ?: ""),
+                "createdAt" to rec.createdAt,
+                "expiresAt" to rec.expiresAt,
+                "usedAt" to rec.usedAt,
+                "expired" to (System.currentTimeMillis() > rec.expiresAt)
             )
         }
+
+    /**
+     * 按 deviceId 查配对会话的 sessionKey(HMAC-SHA256,Base64)。
+     * Web 管理端下发远程命令时签名用(DeviceCommandBridge)。
+     * 配对会话目前存内存:服务重启后丢失,调用方缺失时应提示设备重新配对。
+     */
+    fun sessionKeyFor(deviceId: String): String? = sessions[deviceId]?.sessionKey
 
     fun revokePairingToken(pairTokenPrefixOrId: String) {
         val it = tokens.entries.iterator()
         while (it.hasNext()) {
             val (tk, rec) = it.next()
             if (rec.deviceId == pairTokenPrefixOrId || tk == pairTokenPrefixOrId) {
+                // 同步删除 DB 里的配对会话,避免吊销后端重启后旧 sessionKey 复活
+                runCatching {
+                    sessions.remove(rec.deviceId)?.let {
+                        runCatching { databaseService.deletePairSession(rec.deviceId) }
+                            .onFailure { e -> logger.warn("deletePairSession on revoke failed: {}", e.message) }
+                    }
+                }
                 it.remove(); sessions.remove(rec.deviceId)
             }
         }
