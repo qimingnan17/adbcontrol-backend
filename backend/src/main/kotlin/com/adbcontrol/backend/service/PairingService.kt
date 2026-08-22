@@ -31,6 +31,7 @@ class PairingService(
     private val config: BackendConfig,
     private val aclService: AclService,
     private val databaseService: DatabaseService,
+    private val emqxProxy: EmqxProxyService,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -142,7 +143,9 @@ class PairingService(
 
         val sessionKey = CryptoUtil.randomBase64(BackendConstants.SESSION_KEY_BYTES)
         val mqttPassword = CryptoUtil.randomBase64(BackendConstants.MQTT_PASSWORD_BYTES)
-        val username = "${config.emqxAppId}@${payload.deviceId}"
+        // 用户名即 deviceId:Serverless 无 ACL,设备隔离靠 clientId/topic/HMAC 签名;
+        // 账号本身经 EMQX 部署 API 动态注册(见 provisionEmqxUser),配对即生效。
+        val username = payload.deviceId
         val expiresAt = now + BackendConstants.CREDENTIAL_TTL_MS
 
         // putIfAbsent 原子占位:同 deviceId 并发只允许首个 session 写入成功
@@ -193,6 +196,12 @@ class PairingService(
                 }.onFailure { logger.warn("registerDevice failed (best-effort): {}", it.message) }
             }
 
+            // EMQX 注册设备 MQTT 账号:失败则整个配对失败(finally 会回滚 session 与 usedAt),
+            // 绝不下发 broker 不认识的凭证(那会让设备陷入永久 401 重连)
+            provisionEmqxUser(username, mqttPassword)?.let { err ->
+                return PairResult.Fail(PairingError("SERVER_ERROR", err))
+            }
+
             logger.info("Paired deviceId={}, username={}, expiresAt={}", payload.deviceId, username, expiresAt)
 
             success = true
@@ -213,6 +222,19 @@ class PairingService(
         }
     }
 
+    /** 在 EMQX 内置数据库中注册设备账号;已存在(重配对)则改密复用。返回 null 表示成功。 */
+    private suspend fun provisionEmqxUser(username: String, password: String): String? {
+        val created = emqxProxy.createAuthUser(username, password)
+        if (created.status in 200..299) return null
+        val updated = emqxProxy.updateAuthUserPassword(username, password)
+        if (updated.status in 200..299) return null
+        logger.warn(
+            "provision emqx user '{}' failed: create={} update={}",
+            username, created.status, updated.status,
+        )
+        return "EMQX 账号注册失败(create=${created.status}, update=${updated.status})"
+    }
+
     suspend fun renew(req: RenewRequest): RenewResult {
         val now = System.currentTimeMillis()
         cleanupExpired(now)
@@ -220,6 +242,8 @@ class PairingService(
         // Bug#4:用 compute 在单一临界区内完成"读旧值→校验→生成新值→写回→返回",
         // 保证返回给客户端的密码与存储一致,并做过期校验。
         var outcome: RenewResult? = null
+        var renewedOldPassword: String = ""
+        var renewedNewPassword: String = ""
         sessions.compute(req.deviceId) { _, s ->
             if (s == null) return@compute null  // 未找到,由外部返回 DEVICE_NOT_FOUND
             // Bug#6:常数时间比较 pairToken,避免时序侧信道
@@ -236,18 +260,32 @@ class PairingService(
                 outcome = RenewResult.Fail(PairingError("SESSION_EXPIRED", "会话已过期,请重新配对"))
                 return@compute s
             }
+            val oldPassword = s.mqttPassword
             val newPassword = CryptoUtil.randomBase64(BackendConstants.MQTT_PASSWORD_BYTES)
             val newExpiresAt = now + BackendConstants.CREDENTIAL_TTL_MS
             s.mqttPassword = newPassword
             s.expiresAt = newExpiresAt
                 outcome = RenewResult.Ok(
                 RenewResponse(
-                    broker = config.buildBroker("${config.emqxAppId}@${req.deviceId}", newPassword),
+                    broker = config.buildBroker(req.deviceId, newPassword),
                     expiresAt = newExpiresAt,
                 )
             )
+            renewedOldPassword = oldPassword
+            renewedNewPassword = newPassword
             s
         } ?: return RenewResult.Fail(PairingError("DEVICE_NOT_FOUND", "未找到配对会话"))
+
+        // EMQX 侧同步改密:失败则回滚 session 密码并拒绝本次续期
+        // (设备继续用旧凭证,连接不受影响;绝不返回 broker 还不认识的新密码)
+        if (outcome is RenewResult.Ok) {
+            val upd = emqxProxy.updateAuthUserPassword(req.deviceId, renewedNewPassword)
+            if (upd.status !in 200..299) {
+                logger.warn("renew: emqx password update failed {} for {}", upd.status, req.deviceId)
+                sessions[req.deviceId]?.let { it.mqttPassword = renewedOldPassword }
+                outcome = RenewResult.Fail(PairingError("SERVER_ERROR", "EMQX 密码更新失败(${upd.status}),请稍后重试"))
+            }
+        }
 
         // Bug#25:renew 后同步更新 DB 里的 mqtt_password 与 expires_at,避免重启后倒退
         if (outcome is RenewResult.Ok) {
@@ -346,6 +384,11 @@ class PairingService(
                             .onFailure { e -> logger.warn("deletePairSession on revoke failed: {}", e.message) }
                     }
                 }
+                // 同步删除 EMQX 设备账号(best-effort,删除失败仅记录;设备侧旧凭证随之失效)
+                val devId = rec.deviceId
+                runCatching {
+                    kotlinx.coroutines.runBlocking { emqxProxy.deleteAuthUser(devId) }
+                }.onFailure { e -> logger.warn("deleteAuthUser on revoke failed: {}", e.message) }
                 it.remove(); sessions.remove(rec.deviceId)
             }
         }
