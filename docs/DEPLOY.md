@@ -93,16 +93,20 @@ fly secrets set \
 
 **⚠️ 提示**：`SESSION_SECRET` 一定要用随机生成的 64 字符，不要用固定值，否则 Session 签名有被伪造的风险。
 
-如果需要让 Dashboard/设备详情显示**实时在线状态、电量、命令历史**(即"遥测落库"),
-还要额外注入下列两个 secret —— 先去 EMQX 控制台手工建一个专用账号(建议名 `ingestor`),
-并给它授予 `status/+ health/+ location/+ activity/+ usage/+ result/+ device/offline/+`
-的订阅 ACL,再填进：
+**EMQX 认证说明(2026-08-22 实测更新)**：
+
+- `ADB_EMQX_APP_ID` / `ADB_EMQX_APP_SECRET` 必须是**部署的应用凭证**(控制台 → 部署 → API 访问/应用管理 里创建)，用于调用部署 REST API
+- **设备 MQTT 账号无需手工创建**：配对时后端自动经部署 API 在内置数据库中注册(username = deviceId,随机密码)，吊销时自动删除
+- `ingestor` 账号需在控制台手工创建一次(用于后端订阅遥测),再通过下面两个 secret 注入
+- Serverless 无 ACL、无 JWT(专有版专属)，设备隔离靠 clientId + 独立 topic + HMAC 验签
 
 ```bash
 fly secrets set \
   ADB_EMQX_INGEST_USERNAME=ingestor \
-  ADB_EMQX_INGEST_PASSWORD=<你刚在 EMQX 控制台设的密码>
+  ADB_EMQX_INGEST_PASSWORD=<你在EMQX控制台为ingestor设置的密码>
 ```
+
+本地没有 flyctl 环境时，可在 GitHub 仓库手动触发 `Set Fly Secrets` 工作流(`.github/workflows/set-secrets.yml`)代为注入。
 
 注入完可以用 `fly secrets list` 检查是否都进去了。
 
@@ -147,22 +151,17 @@ VITE_API_BASE=https://api.yourdomain.com npm run build
 
 构建产物会生成在 `web/dist/` 目录下。
 
-### 3.2 部署到 Pages
+### 3.2 部署到 Cloudflare(实际采用 Workers 静态资产)
 
-**方式 A：Pages Dashboard 上传 dist 目录（最简单，适合第一次）**
-
-1. 登录 Cloudflare Dashboard → **Workers & Pages** → **Create application** → **Pages** 选项卡 → **Upload assets**
-2. Project name 填 `adbcontrol-web`（全局唯一）
-3. 把 `web/dist/` 整个目录拖进去，点 Deploy
-
-**方式 B：wrangler CLI 命令行（适合 CI/CD 或脚本化）**
+**实际部署形态(2026-08-22)**:前端以 **Cloudflare Workers 静态资产**方式部署(仓库根 `wrangler.jsonc`,`assets.directory=./dist`,`not_found_handling=single-page-application` 处理 SPA 路由),自定义域名 `baby.slss.top`。部署命令:
 
 ```bash
 cd web
-npx wrangler pages publish ./dist --project-name=adbcontrol-web
+npm install && npm run build
+npx wrangler deploy
 ```
 
-首次运行 `wrangler` 会弹出浏览器让你登录 Cloudflare 授权。
+也兼容 Pages 方式上传 `web/dist/`(Dashboard → Workers & Pages → Create → Pages → Upload assets),或 `npx wrangler pages publish ./dist --project-name=adbcontrol-web`。
 
 ### 3.3 Pages 的环境变量配置
 
