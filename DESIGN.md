@@ -1126,7 +1126,7 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 
 ## 十四、当前进度
 
-> 端到端运行流程见 [docs/RUN.md](docs/RUN.md)。沙箱构建产物已产出(`controlled-debug.apk` / `controller-debug.apk` / `backend.jar`),全模块 `assembleDebug` + `:backend:installDist` BUILD SUCCESSFUL,`:shared:test` + `:backend:test` 全部通过。
+> 端到端运行流程见 [docs/RUN.md](docs/RUN.md)。**2026-08-22:三端已全部部署上线并完成真实设备联调**(见下方"线上部署实录")。
 
 - [x] Gradle 多模块脚手架(version catalog + wrapper)
 - [x] shared 协议与数据模型(`WsMessage` 含遥测/配对/更新类型;`Command` / `ExecutionResult` `@Serializable`)
@@ -1147,7 +1147,43 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 - [x] 后端:pairToken / 临时凭证 / ACL(配额前置校验 + `compute` 原子化 + `putIfAbsent` 防重)
 - [x] 后端:Ktor + HikariCP + TLS + StatusPages(不泄露内部错误)+ CORS
 - [x] 跨端 LWT 载荷一致性 + 验签绕过修复(裸 deviceId 拦截在 codec 前)
-- [ ] 真机端到端联调(待填入 EMQX app_secret / R2 keys 后跑 RUN.md 第 5/6 节)
+
+### 14.1 线上部署实录(2026-08-22)
+
+**真实环境:**
+
+| 组件 | 部署位置 | 地址 |
+| --- | --- | --- |
+| 后端 | Fly.io(sin 区) | https://adbcontrol-backend.fly.dev |
+| Web 管理端 | Cloudflare Workers 静态资产(wrangler.jsonc) | https://baby.slss.top |
+| MySQL | SQLPub | mysql6.sqlpub.com:3311/slss12 |
+| MQTT | EMQX Cloud Serverless(免费层) | o8cc1111.ala.cn-hangzhou.emqxsl.cn:8883 |
+| 真机 | 小米 14(Android 14,国行无 GMS) | deviceId 形如 dev_xxx |
+
+**CI/CD 已跑通:** 后端 push main → GitHub Actions(fly-deploy.yml)→ Fly 远程构建部署;Web push main → Cloudflare 侧自动构建;git 通道被墙时可走 GitHub API 提交(实测可用)。另有 set-secrets.yml 手动工作流,本地无 flyctl 时经 Actions 注入 Fly secrets。
+
+**EMQX 认证机制(重要变更,替代原 8.1 的 ACL 设想):**
+
+- EMQX Cloud Serverless **不提供 ACL、不公开认证用户管理 API 文档**,JWT 认证为专有版专属
+- 实测发现部署 API 的内置数据库用户端点可用:`/api/v5/authentication/password_based:built_in_database/users`(POST 建号 201 / PUT 改密 204 / DELETE 删号 204)
+- **配对时后端自动为设备注册独立 MQTT 账号**(username = deviceId,随机密码);renew 同步改密;吊销自动删号——均已线上实测
+- `ingestor` 账号(后端遥测消费)在控制台手工创建一次,经 `ADB_EMQX_INGEST_USERNAME/PASSWORD` 注入
+- 设备隔离防线:clientId(`device-{deviceId}`)+ 独立 topic + 每设备独立 HMAC sessionKey;REST 基址统一补 `/api/v5` 前缀
+
+**本轮修复清单(线上验证通过):**
+
+- 后端:任务 API `TaskRequest` DTO(原 `Map<String,Any>` 反序列化必 400)+ PUT 部分更新语义;3 处 query 参数误读路由参数;管理接口响应体序列化 500(`toJsonElement` 转换器 + `GeneratedPairToken`/`DeviceRow` 补 `@Serializable`);遥测 ingestor 首连失败 60s 周期重试;DB 环境变量名兼容 `ADB_MYSQL_*`/`ADB_DB_*`(曾致后端永远拿空密码连库);管理员改为**首次访问前端初始化**(`/api/setup` 仅空表时开放);泄露的 MySQL 真实密码从模板/fly.toml 移除并轮换
+- Web:任务开关改全量载荷(原只传 enabled 会清空任务);会话恢复竞态(硬刷新被弹回登录);移除后端不支持的 `take_screenshot` 假功能
+- 被控端:扫码器 ML Kit→**ZXing 内嵌**(国行无 GMS,ML Kit 模块下载永远卡住);配对报文补 `serverUrl` 必填字段;Android 14 FGS location 类型动态裁剪(原配对前定位未授权即崩溃循环);配对后服务重载配置拉起 MQTT;权限自检真实检测 + 每项「去授权」跳转对应系统设置;无障碍服务触摸探索模式移除(原开启即"屏幕失控")
+- 构建:中文路径需 junction 至 ASCII 路径 + `android.overridePathCheck`;`org.gradle.jvmargs=-Xmx3g`;阿里云 Maven 镜像(`~/.gradle/init.gradle.kts`)
+
+**已知遗留(未修,按优先级):**
+
+- [ ] 被控端:凭证 7 天到期无自动续期(renew 已可用但无触发点)
+- [ ] 被控端:静默安装前缺 APK 签名/包名校验;截屏只写本地不回传(R2 上传链路未接线);`AppTimeController` 本地限额未接线
+- [ ] 后端:`notification_log` 表零写入(通知事件入错表);XFF 可伪造 + 登录限流可被用来锁死账号;sessionKey/MQTT 密码明文存 MySQL;`/update/report` 无界内存
+- [ ] EMQX 无 ACL(Serverless 限制),越权防护完全依赖 HMAC 验签
+- [ ] LWT retained 消息上线后不清除,新订阅者会收到过期"离线"
 - [ ] Compose UI 与 docs/ui 高保真原型逐屏对照补齐
 
 ---
