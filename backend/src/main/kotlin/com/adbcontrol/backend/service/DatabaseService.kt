@@ -1072,6 +1072,88 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }.onFailure { logger.warn("markOffline failed for {}: {}", deviceId, it.message) }
     }
 
+    // ---- OTA 版本清单(app_version_manifest) ----
+
+    /** 发布/覆盖一个版本清单(UNIQUE(version_code, channel) 幂等)。返回是否成功。 */
+    fun upsertVersionManifest(m: com.adbcontrol.backend.model.VersionManifest): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        val sql = """
+            INSERT INTO app_version_manifest
+              (version_code, version_name, channel, priority, full_apk_url,
+               patch_url, patch_from_version_code, patch_to_version_code,
+               sha256, size_bytes, release_notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              version_name = VALUES(version_name), priority = VALUES(priority),
+              full_apk_url = VALUES(full_apk_url), patch_url = VALUES(patch_url),
+              patch_from_version_code = VALUES(patch_from_version_code),
+              patch_to_version_code = VALUES(patch_to_version_code),
+              sha256 = VALUES(sha256), size_bytes = VALUES(size_bytes),
+              release_notes = VALUES(release_notes)
+        """.trimIndent()
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(sql).use { ps ->
+                    ps.setInt(1, m.versionCode)
+                    ps.setString(2, m.versionName)
+                    ps.setString(3, m.channel)
+                    ps.setString(4, m.priority.name)
+                    ps.setString(5, m.fullApkUrl)
+                    if (m.patchUrl == null) ps.setNull(6, java.sql.Types.VARCHAR) else ps.setString(6, m.patchUrl)
+                    ps.setInt(7, m.patchFromVersionCode)
+                    ps.setInt(8, m.patchToVersionCode)
+                    ps.setString(9, m.sha256)
+                    ps.setLong(10, m.sizeBytes)
+                    if (m.releaseNotes.isBlank()) ps.setNull(11, java.sql.Types.VARCHAR) else ps.setString(11, m.releaseNotes)
+                    ps.setLong(12, System.currentTimeMillis())
+                    ps.executeUpdate()
+                }
+            }
+            true
+        }.getOrElse {
+            logger.warn("upsertVersionManifest failed for v${m.versionCode}/${m.channel}: {}", it.message)
+            false
+        }
+    }
+
+    /** 全部版本清单(version_code 降序)。DB 不可达返回空列表。 */
+    fun listVersionManifests(): List<Map<String, Any>> {
+        val ds = dataSource ?: ensureDataSource() ?: return emptyList()
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery(
+                        "SELECT version_code, version_name, channel, priority, full_apk_url, patch_url, " +
+                            "patch_from_version_code, patch_to_version_code, sha256, size_bytes, release_notes, created_at " +
+                            "FROM app_version_manifest ORDER BY version_code DESC"
+                    ).use { rs ->
+                        val list = mutableListOf<Map<String, Any>>()
+                        while (rs.next()) {
+                            list += mapOf(
+                                "versionCode" to rs.getInt("version_code"),
+                                "versionName" to (rs.getString("version_name") ?: ""),
+                                "channel" to (rs.getString("channel") ?: "stable"),
+                                "priority" to (rs.getString("priority") ?: "NORMAL"),
+                                "fullApkUrl" to (rs.getString("full_apk_url") ?: ""),
+                                "patchUrl" to rs.getString("patch_url"),
+                                "patchFromVersionCode" to rs.getInt("patch_from_version_code"),
+                                "patchToVersionCode" to rs.getInt("patch_to_version_code"),
+                                "sha256" to (rs.getString("sha256") ?: ""),
+                                "sizeBytes" to rs.getLong("size_bytes"),
+                                "releaseNotes" to (rs.getString("release_notes") ?: ""),
+                                "createdAt" to rs.getLong("created_at"),
+                            )
+                        }
+                        list
+                    }
+                }
+            }
+        }.getOrElse {
+            logger.warn("listVersionManifests failed: {}", it.message)
+            emptyList()
+        }
+    }
+
     /** 管理员改密(/api/change-password),成功返回 true。 */
     fun updateAdminPassword(adminId: Int, passwordHash: String): Boolean {
         val ds = dataSource ?: ensureDataSource() ?: return false

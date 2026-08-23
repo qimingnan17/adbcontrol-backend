@@ -376,6 +376,12 @@ class PairingService(
     fun knowsDevice(deviceId: String): Boolean =
         sessions.containsKey(deviceId) || tokens.values.any { it.deviceId == deviceId }
 
+    /** 当前全部有效配对会话的 deviceId(OTA 更新广播用),过期会话先清理。 */
+    fun allSessionDeviceIds(): List<String> {
+        cleanupExpired(System.currentTimeMillis())
+        return sessions.keys.toList()
+    }
+
     /** 是否已有待使用的配对令牌占用该设备名(生成令牌时的名称唯一性预检)。 */
     fun isPendingTokenNameTaken(deviceName: String): Boolean {
         val n = deviceName.trim()

@@ -40,6 +40,8 @@ data class BackendConfig(
     /** 遥测 ingestor 使用的 MQTT 账号(运维在 EMQX 控制台手工创建一次,非代码自注册)。 */
     val emqxIngestUsername: String = "",
     val emqxIngestPassword: String = "",
+    /** OTA 版本发布令牌(CI 经 X-Admin-Token 头调用 /api/updates/publish;未配置则发布通道关闭)。 */
+    val pmToken: String = "",
 ) {
     /** 由模板拼装单设备 Broker 凭证(用户名/密码在配对时签发)。 */
     fun buildBroker(username: String, password: String): BrokerConfig = BrokerConfig(
@@ -160,6 +162,7 @@ data class BackendConfig(
                 dbPassword = getDb("PASSWORD", "db.password", ""),
                 emqxIngestUsername = get("ADB_EMQX_INGEST_USERNAME", "emqx.ingest_username", ""),
                 emqxIngestPassword = get("ADB_EMQX_INGEST_PASSWORD", "emqx.ingest_password", ""),
+                pmToken = get("ADB_PM_TOKEN", "pm.token", ""),
             )
         }
 

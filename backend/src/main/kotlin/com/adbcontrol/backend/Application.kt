@@ -94,7 +94,7 @@ fun Application.module() {
     val emqxProxy = EmqxProxyService(config)
     // PairingService 依赖 emqxProxy:配对时经部署 API 动态注册设备 MQTT 账号
     val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
-    val updateService = UpdateService(config)
+    val updateService = UpdateService(config, databaseService)
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
@@ -128,7 +128,7 @@ fun Application.module() {
         // 受 auth 保护的 admin 路由放在 authenticate 块里(由 AdminRoutes.kt 内部 authenticate("auth-session") 控制)
         adminRoutes(databaseService, pairingService, commandBridge)
         pairingRoutes(pairingService)
-        updateRoutes(updateService)
+        updateRoutes(updateService, commandBridge)
         // EMQX REST 代理也收进会话保护:不再允许未登录访客枚举在线设备 / 订阅,
         // 否则等于公开暴露设备指纹与在线状态侦察探针
         authenticate("auth-session") {

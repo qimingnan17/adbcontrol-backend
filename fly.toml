@@ -16,6 +16,10 @@
 #   ADB_MYSQL_PASSWORD=从SQLPub控制台复制 \
 #   ADB_SERVER_URL=https://api.yourdomain.com \
 #   SESSION_SECRET=openssl rand -hex 48（随机64字符）
+#
+# OTA 发布令牌(CI 经 X-Admin-Token 头调用 /api/updates/publish):
+#   openssl rand -hex 24 生成,同一个值配到 controlled 仓库 Secrets 的 ADB_PM_TOKEN
+#   fly secrets set ADB_PM_TOKEN=<随机64字符>
 
 app = "adbcontrol-backend"
 primary_region = "sin"
