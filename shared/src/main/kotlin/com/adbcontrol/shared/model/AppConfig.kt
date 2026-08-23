@@ -22,6 +22,8 @@ data class AppConfig(
     val sessionKey: String? = null,
     /** 临时凭证过期时间(毫秒),过期后由被控端向 backend 续期 */
     val expiresAt: Long = 0,
+    /** 后端服务器 URL(OTA 更新检查 /update/check 与结果上报 /update/report 用) */
+    val serverUrl: String = "",
 )
 
 @Serializable

@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS admin_user (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 配对会话(设备临时 MQTT 凭证 + 长期 sessionKey)
--- 后端重启后由此恢复完整的配对关系,避免已配对设备被迫重新扫码 pairing。
+-- 后端重启后由此恢复完整的配对关系,避免已配对设备被迫重新扫�?pairing�?
 -- 安全注意:session_key / mqtt_password 属于敏感凭证,后续如需更强保护可加密钥包装(wrap)
 CREATE TABLE IF NOT EXISTS pair_session (
   device_id     VARCHAR(64)  PRIMARY KEY,
@@ -174,4 +174,22 @@ CREATE TABLE IF NOT EXISTS pair_session (
   expires_at    BIGINT       NOT NULL,
   created_at    BIGINT       NOT NULL,
   updated_at    BIGINT       NOT NULL
+);
+
+-- OTA 版本清单(CI 发布 / Web 查询;UNIQUE(version_code, channel) 幂等 upsert)
+CREATE TABLE IF NOT EXISTS app_version_manifest (
+  id                      BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  version_code            INT          NOT NULL,
+  version_name            VARCHAR(32)  NOT NULL,
+  channel                 VARCHAR(16)  NOT NULL DEFAULT 'stable',
+  priority                VARCHAR(16)  NOT NULL DEFAULT 'NORMAL',
+  full_apk_url            VARCHAR(512) NOT NULL,
+  patch_url               VARCHAR(512) NULL,
+  patch_from_version_code INT          NOT NULL DEFAULT 0,
+  patch_to_version_code   INT          NOT NULL DEFAULT 0,
+  sha256                  VARCHAR(128) NOT NULL,
+  size_bytes              BIGINT       NOT NULL DEFAULT 0,
+  release_notes           TEXT         NULL,
+  created_at              BIGINT       NOT NULL,
+  UNIQUE KEY uq_code_channel (version_code, channel)
 );

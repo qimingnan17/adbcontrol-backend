@@ -220,6 +220,30 @@ class DeviceCommandBridge(
     }
 
     /**
+     * 向所有有配对会话的设备广播一条 PUSH_DATA(逐设备用各自 sessionKey 签名)。
+     * OTA 版本发布后通知被控端立即检查更新。返回成功送达的设备数。
+     */
+    suspend fun broadcastPush(payloadJson: String): Int {
+        var sent = 0
+        for (deviceId in pairingService.allSessionDeviceIds()) {
+            val sessionKey = pairingService.sessionKeyFor(deviceId) ?: continue
+            val id = "push-" + UUID.randomUUID().toString().replace("-", "").take(16)
+            val timestamp = System.currentTimeMillis()
+            val envelope = CommandEnvelope(
+                id = id,
+                type = MessageType.PUSH_DATA.name,
+                payload = payloadJson,
+                timestamp = timestamp,
+                signature = HmacSigner.sign(HmacSigner.buildSigningData(payloadJson, id, timestamp), sessionKey),
+            )
+            val resp = emqx.publish(MqttTopics.push(deviceId), json.encodeToString(CommandEnvelope.serializer(), envelope), qos = 1)
+            if (resp.status in 200..299) sent++
+            logger.info("broadcastPush deviceId={} status={}", deviceId, resp.status)
+        }
+        return sent
+    }
+
+    /**
      * 下发任务栏通知(REMINDER)。按钮文字、是否要求签收受 [ReminderPayload] 控制。
      * 签收回报由受控端发 REMINDER_RESULT 到 result/{deviceId},经 ingestor 入库 task_ack。
      */

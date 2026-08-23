@@ -174,6 +174,13 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
             call.respond(token)
         }
 
+        // OTA 版本清单(Web 查询;CI 发布走 /api/updates/publish 的 token 通道)
+        get("/api/updates") {
+            call.respond(buildJsonObject {
+                put("items", db.listVersionManifests().toJsonElement())
+            })
+        }
+
         delete("/api/pairing-tokens/{idOrPrefix}") {
             val removed = pairing.revokePairingToken(call.parameters["idOrPrefix"]!!)
             if (removed) call.respond(mapOf("ok" to true))
