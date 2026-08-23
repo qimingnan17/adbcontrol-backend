@@ -90,6 +90,8 @@ data class UsageReport(
 data class UsageItem(
     val pkg: String,
     val appName: String? = null,
+    /** 官方图标 URL(R2 公开读,icons/{pkg}.png);未配置 R2 时为 null */
+    val iconUrl: String? = null,
     val usageMinutes: Int,
 )
 

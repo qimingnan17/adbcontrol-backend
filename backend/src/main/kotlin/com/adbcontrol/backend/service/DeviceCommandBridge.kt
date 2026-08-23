@@ -90,6 +90,9 @@ class DeviceCommandBridge(
             if (pkg.isNullOrEmpty()) MapResult.MissingField("packageName")
             else MapResult.Mapped(Command(CommandCategory.APP, "forceStop", mapOf("pkg" to pkg)))
         }
+        // 获取当前截图:被控端 Shizuku screencap / 无障碍 takeScreenshot 采集后,
+        // 经 R2 上传回传 URL(无 R2 时降级 base64),见 controlled CommandHandler.handleScreencap
+        "screencap" -> MapResult.Mapped(Command(CommandCategory.APP, "screencap", emptyMap()))
         "app_time_limit" -> {
             val pkg = args["packageName"]?.trim()
             if (pkg.isNullOrEmpty()) MapResult.MissingField("packageName")
