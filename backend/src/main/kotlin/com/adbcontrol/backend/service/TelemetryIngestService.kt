@@ -275,6 +275,8 @@ class TelemetryIngestService(
                         usageMinutes = item.usageMinutes,
                         date = r.date,
                         uploadedAt = r.timestamp,
+                        appName = item.appName,
+                        iconUrl = item.iconUrl,
                     )
                 }
             }

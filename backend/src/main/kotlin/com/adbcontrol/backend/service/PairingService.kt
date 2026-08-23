@@ -372,26 +372,62 @@ class PairingService(
      */
     fun sessionKeyFor(deviceId: String): String? = sessions[deviceId]?.sessionKey
 
-    fun revokePairingToken(pairTokenPrefixOrId: String) {
+    /** 该 deviceId 是否存在任何配对痕迹(会话或令牌),删除设备前的存在性校验用。 */
+    fun knowsDevice(deviceId: String): Boolean =
+        sessions.containsKey(deviceId) || tokens.values.any { it.deviceId == deviceId }
+
+    /** 是否已有待使用的配对令牌占用该设备名(生成令牌时的名称唯一性预检)。 */
+    fun isPendingTokenNameTaken(deviceName: String): Boolean {
+        val n = deviceName.trim()
+        if (n.isEmpty()) return false
+        return tokens.values.any { it.usedAt == 0L && it.deviceName?.trim() == n }
+    }
+
+    /**
+     * 吊销配对令牌(按完整 token 或 deviceId 匹配)。命中则同时:
+     * 删内存令牌/会话 + 删 DB pair_session + 删 EMQX 设备账号(best-effort)。
+     * 返回是否真的命中并移除了记录,供路由返回 404 而非永远 ok:true。
+     */
+    suspend fun revokePairingToken(pairTokenPrefixOrId: String): Boolean {
+        var removed = false
         val it = tokens.entries.iterator()
         while (it.hasNext()) {
             val (tk, rec) = it.next()
             if (rec.deviceId == pairTokenPrefixOrId || tk == pairTokenPrefixOrId) {
-                // 同步删除 DB 里的配对会话,避免吊销后端重启后旧 sessionKey 复活
-                runCatching {
-                    sessions.remove(rec.deviceId)?.let {
-                        runCatching { databaseService.deletePairSession(rec.deviceId) }
-                            .onFailure { e -> logger.warn("deletePairSession on revoke failed: {}", e.message) }
-                    }
-                }
-                // 同步删除 EMQX 设备账号(best-effort,删除失败仅记录;设备侧旧凭证随之失效)
-                val devId = rec.deviceId
-                runCatching {
-                    kotlinx.coroutines.runBlocking { emqxProxy.deleteAuthUser(devId) }
-                }.onFailure { e -> logger.warn("deleteAuthUser on revoke failed: {}", e.message) }
-                it.remove(); sessions.remove(rec.deviceId)
+                removeSessionAndEmqx(rec.deviceId)
+                it.remove()
+                removed = true
             }
         }
+        // 兼容:token 记录已被过期清扫,但 DB 里还留着该设备的会话
+        if (!removed && sessions.containsKey(pairTokenPrefixOrId)) {
+            removeSessionAndEmqx(pairTokenPrefixOrId)
+            removed = true
+        }
+        return removed
+    }
+
+    /**
+     * 彻底移除一台设备:吊销其名下全部令牌、删除配对会话与 EMQX 账号。
+     * 返回是否存在过该设备的配对痕迹(供路由判断 404)。
+     */
+    suspend fun removeDevice(deviceId: String): Boolean {
+        val had = knowsDevice(deviceId)
+        val it = tokens.entries.iterator()
+        while (it.hasNext()) {
+            if (it.next().value.deviceId == deviceId) it.remove()
+        }
+        removeSessionAndEmqx(deviceId)
+        return had
+    }
+
+    /** 删除内存会话 + DB pair_session + EMQX 设备账号(后两者 best-effort)。 */
+    private suspend fun removeSessionAndEmqx(deviceId: String) {
+        sessions.remove(deviceId)
+        runCatching { databaseService.deletePairSession(deviceId) }
+            .onFailure { e -> logger.warn("deletePairSession failed for {}: {}", deviceId, e.message) }
+        runCatching { emqxProxy.deleteAuthUser(deviceId) }
+            .onFailure { e -> logger.warn("deleteAuthUser failed for {}: {}", deviceId, e.message) }
     }
 
     companion object {

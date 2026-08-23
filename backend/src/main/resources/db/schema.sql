@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS app_usage_daily (
   device_id       VARCHAR(64)  NOT NULL,
   user_id         VARCHAR(64)  NOT NULL,
   pkg             VARCHAR(128) NOT NULL,
+  app_name        VARCHAR(128) NULL,
+  icon_url        VARCHAR(512) NULL,
   usage_minutes   INT          NOT NULL,
   date            DATE         NOT NULL,
   uploaded_at     BIGINT       NOT NULL,

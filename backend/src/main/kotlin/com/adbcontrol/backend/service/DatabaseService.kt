@@ -95,6 +95,17 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
             logger.info("DDL executed (CREATE TABLE IF NOT EXISTS)")
         }.onFailure { logger.warn("DDL execution failed (best-effort): {}", it.message) }
+
+        // 增量迁移:老库补列(CREATE TABLE IF NOT EXISTS 不会给已存在的表加列)。
+        // 列已存在时报 Duplicate column,属预期,仅记 info。
+        listOf(
+            "ALTER TABLE app_usage_daily ADD COLUMN app_name VARCHAR(128) NULL",
+            "ALTER TABLE app_usage_daily ADD COLUMN icon_url VARCHAR(512) NULL",
+        ).forEach { ddl ->
+            runCatching {
+                ds.connection.use { conn -> conn.createStatement().use { it.execute(ddl) } }
+            }.onFailure { logger.info("migrate skipped (likely exists): {}", it.message) }
+        }
     }
 
     /** 配对时 upsert device 表(幂等)。 */
@@ -426,6 +437,75 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
+    /** 设备台账是否存在(DB 视角)。 */
+    fun deviceExists(deviceId: String): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("SELECT COUNT(*) FROM device WHERE device_id = ?").use { ps ->
+                    ps.setString(1, deviceId)
+                    ps.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+                }
+            }
+        }.getOrElse {
+            logger.warn("deviceExists failed for $deviceId: {}", it.message)
+            false
+        }
+    }
+
+    /** 设备名称是否已被占用(设备名称作为主标识,生成配对令牌时强制唯一)。 */
+    fun deviceNameExists(name: String): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("SELECT COUNT(*) FROM device WHERE name = ?").use { ps ->
+                    ps.setString(1, name)
+                    ps.executeQuery().use { rs -> rs.next() && rs.getInt(1) > 0 }
+                }
+            }
+        }.getOrElse {
+            logger.warn("deviceNameExists failed: {}", it.message)
+            false
+        }
+    }
+
+    /**
+     * 彻底删除设备及全部关联数据(级联)。schema 无外键约束,逐表删除并包在事务里,
+     * 任一表失败整体回滚,避免留下半删状态。返回是否成功。
+     */
+    fun deleteDevice(deviceId: String): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        val tables = listOf(
+            "app_usage_daily", "app_activity_log", "notification_log",
+            "location_history", "execution_log", "task_ack", "task",
+            "app", "device_status", "pair_session", "device",
+        )
+        return runCatching {
+            ds.connection.use { conn ->
+                val prevAutoCommit = conn.autoCommit
+                try {
+                    conn.autoCommit = false
+                    for (t in tables) {
+                        conn.prepareStatement("DELETE FROM $t WHERE device_id = ?").use { ps ->
+                            ps.setString(1, deviceId)
+                            ps.executeUpdate()
+                        }
+                    }
+                    conn.commit()
+                    true
+                } catch (e: Exception) {
+                    runCatching { conn.rollback() }
+                    throw e
+                } finally {
+                    conn.autoCommit = prevAutoCommit
+                }
+            }
+        }.getOrElse {
+            logger.warn("deleteDevice failed for $deviceId: {}", it.message)
+            false
+        }
+    }
+
     fun getDeviceOverview(deviceId: String): Map<String, Any?> {
         val ds = dataSource ?: ensureDataSource() ?: return emptyMap()
         return runCatching {
@@ -519,7 +599,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
 
                 val sevenDaysAgo = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
                 conn.prepareStatement(
-                    "SELECT id, user_id, pkg, usage_minutes, date, uploaded_at FROM app_usage_daily WHERE device_id = ? AND uploaded_at >= ? ORDER BY uploaded_at DESC"
+                    "SELECT id, user_id, pkg, app_name, icon_url, usage_minutes, date, uploaded_at FROM app_usage_daily WHERE device_id = ? AND uploaded_at >= ? ORDER BY uploaded_at DESC"
                 ).use { ps ->
                     ps.setString(1, deviceId)
                     ps.setLong(2, sevenDaysAgo)
@@ -530,6 +610,8 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 "id" to rs.getLong("id"),
                                 "userId" to rs.getString("user_id"),
                                 "pkg" to rs.getString("pkg"),
+                                "appName" to rs.getString("app_name"),
+                                "iconUrl" to rs.getString("icon_url"),
                                 "usageMinutes" to rs.getInt("usage_minutes"),
                                 "date" to rs.getString("date"),
                                 "uploadedAt" to rs.getLong("uploaded_at")
@@ -902,7 +984,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }.onFailure { logger.warn("insertActivity failed for {}: {}", deviceId, it.message) }
     }
 
-    /** usage/{deviceId} 上行 → app_usage_daily(UNIQUE 复合键幂等)。 */
+    /** usage/{deviceId} 上行 → app_usage_daily(UNIQUE 复合键幂等)。appName/iconUrl 供 Web 展示应用名与官方图标。 */
     fun upsertUsageItem(
         deviceId: String,
         userId: String,
@@ -910,23 +992,30 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         usageMinutes: Int,
         date: String,
         uploadedAt: Long,
+        appName: String? = null,
+        iconUrl: String? = null,
     ) {
         val ds = dataSource ?: ensureDataSource() ?: return
         runCatching {
             ds.connection.use { conn ->
                 conn.prepareStatement(
                     """
-                    INSERT INTO app_usage_daily (device_id, user_id, pkg, usage_minutes, date, uploaded_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE usage_minutes = VALUES(usage_minutes), uploaded_at = VALUES(uploaded_at)
+                    INSERT INTO app_usage_daily (device_id, user_id, pkg, app_name, icon_url, usage_minutes, date, uploaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                      app_name = COALESCE(VALUES(app_name), app_name),
+                      icon_url = COALESCE(VALUES(icon_url), icon_url),
+                      usage_minutes = VALUES(usage_minutes), uploaded_at = VALUES(uploaded_at)
                     """.trimIndent()
                 ).use { ps ->
                     ps.setString(1, deviceId)
                     ps.setString(2, userId)
                     ps.setString(3, pkg)
-                    ps.setInt(4, usageMinutes)
-                    ps.setString(5, date)
-                    ps.setLong(6, uploadedAt)
+                    if (appName == null) ps.setNull(4, java.sql.Types.VARCHAR) else ps.setString(4, appName)
+                    if (iconUrl == null) ps.setNull(5, java.sql.Types.VARCHAR) else ps.setString(5, iconUrl)
+                    ps.setInt(6, usageMinutes)
+                    ps.setString(7, date)
+                    ps.setLong(8, uploadedAt)
                     ps.executeUpdate()
                 }
             }

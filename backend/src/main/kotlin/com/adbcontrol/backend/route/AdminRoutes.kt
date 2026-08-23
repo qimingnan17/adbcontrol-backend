@@ -32,6 +32,32 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
             })
         }
 
+        // 删除设备:级联清理 DB(device/status/usage/task/log 等全部关联表)
+        // + 吊销配对令牌/会话/EMQX 账号。DB 删除失败返回 500,不静默假成功。
+        delete("/api/devices/{deviceId}") {
+            val id = call.parameters["deviceId"] ?: return@delete call.respond(
+                HttpStatusCode.BadRequest,
+                mapOf("message" to "missing deviceId")
+            )
+            val existedInDb = db.deviceExists(id)
+            val existedInPairing = pairing.knowsDevice(id)
+            if (!existedInDb && !existedInPairing) {
+                call.respond(HttpStatusCode.NotFound, mapOf("message" to "设备不存在"))
+                return@delete
+            }
+            val dbDeleted = db.deleteDevice(id)
+            // 令牌/会话/EMQX 清理 best-effort,不阻塞响应;失败仅影响残留凭证,不影响列表展示
+            pairing.removeDevice(id)
+            if (!dbDeleted && existedInDb) {
+                call.respond(
+                    HttpStatusCode.InternalServerError,
+                    mapOf("message" to "设备数据删除失败(数据库不可达或写入失败),请稍后重试")
+                )
+            } else {
+                call.respond(mapOf("ok" to true))
+            }
+        }
+
         get("/api/devices/{deviceId}/commands") {
             val id = call.parameters["deviceId"]!!
             // limit 是 query 参数,不是路由参数
@@ -132,7 +158,15 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         post("/api/pairing-tokens") {
             // Map<String, Any> 无法被 kotlinx.serialization 反序列化,必须按 JsonObject 解析
             val body = runCatching { call.receive<JsonObject>() }.getOrNull()
-            val name = body?.get("deviceName")?.jsonPrimitive?.contentOrNull
+            val name = body?.get("deviceName")?.jsonPrimitive?.contentOrNull?.trim()
+            // 设备名称是设备的主标识:与已有设备或待使用令牌重名时拒绝(409),前端提示改名
+            if (!name.isNullOrBlank() && (pairing.isPendingTokenNameTaken(name) || db.deviceNameExists(name))) {
+                call.respond(
+                    HttpStatusCode.Conflict,
+                    mapOf("message" to "设备名称「$name」已被占用，请换一个名称")
+                )
+                return@post
+            }
             // ttl 收敛到 [1 分钟, 24 小时],防止生成永不过期的配对 token
             val ttl = (body?.get("ttlMs")?.jsonPrimitive?.longOrNull ?: 10 * 60_000L)
                 .coerceIn(60_000L, 24 * 3_600_000L)
@@ -141,8 +175,9 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         }
 
         delete("/api/pairing-tokens/{idOrPrefix}") {
-            pairing.revokePairingToken(call.parameters["idOrPrefix"]!!)
-            call.respond(mapOf("ok" to true))
+            val removed = pairing.revokePairingToken(call.parameters["idOrPrefix"]!!)
+            if (removed) call.respond(mapOf("ok" to true))
+            else call.respond(HttpStatusCode.NotFound, mapOf("message" to "未找到匹配的令牌或设备"))
         }
     }
 }
