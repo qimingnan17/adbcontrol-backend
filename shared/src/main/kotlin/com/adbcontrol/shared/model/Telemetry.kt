@@ -70,8 +70,6 @@ data class ActivityReport(
         APP_FOREGROUND,                        // 应用切到前台
         APP_BACKGROUND,                       // 应用切到后台
         APP_BLOCKED,                           // 命中禁用名单,被拦截
-        NOTIFICATION_POSTED,                   // 收到通知
-        NOTIFICATION_REMOVED,
     }
 }
 
@@ -106,7 +104,6 @@ data class HealthReport(
     val accessibility: Boolean,
     val deviceAdmin: Boolean,
     val usageStats: Boolean,
-    val notificationListener: Boolean,
     val batteryWhitelist: Boolean,
     val androidVersion: String,
     val appVersion: String,

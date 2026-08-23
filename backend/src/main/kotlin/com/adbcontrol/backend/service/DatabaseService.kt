@@ -578,25 +578,6 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                     }
                 }
 
-                conn.prepareStatement(
-                    "SELECT id, pkg, title, text, posted_at FROM notification_log WHERE device_id = ? ORDER BY posted_at DESC LIMIT 20"
-                ).use { ps ->
-                    ps.setString(1, deviceId)
-                    ps.executeQuery().use { rs ->
-                        val notifList = mutableListOf<Map<String, Any?>>()
-                        while (rs.next()) {
-                            notifList += mapOf(
-                                "id" to rs.getLong("id"),
-                                "pkg" to rs.getString("pkg"),
-                                "title" to rs.getString("title"),
-                                "text" to rs.getString("text"),
-                                "postedAt" to rs.getLong("posted_at")
-                            )
-                        }
-                        result["notificationLogs"] = notifList
-                    }
-                }
-
                 val sevenDaysAgo = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
                 conn.prepareStatement(
                     "SELECT id, user_id, pkg, app_name, icon_url, usage_minutes, date, uploaded_at FROM app_usage_daily WHERE device_id = ? AND uploaded_at >= ? ORDER BY uploaded_at DESC"
