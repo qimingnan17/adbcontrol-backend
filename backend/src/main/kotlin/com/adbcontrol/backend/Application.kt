@@ -8,6 +8,7 @@ import com.adbcontrol.backend.route.authRoutes
 import com.adbcontrol.backend.routes.emqxRoutes
 import com.adbcontrol.backend.routes.healthRoutes
 import com.adbcontrol.backend.routes.pairingRoutes
+import com.adbcontrol.backend.routes.updateApkProxyRoutes
 import com.adbcontrol.backend.routes.updateRoutes
 import com.adbcontrol.backend.service.AclService
 import com.adbcontrol.backend.service.DatabaseService
@@ -129,6 +130,8 @@ fun Application.module() {
         adminRoutes(databaseService, pairingService, commandBridge)
         pairingRoutes(pairingService)
         updateRoutes(updateService, commandBridge)
+        // APK 下载中转:/update/apk?url=<GitHub Release 链接>(check 响应里的直链会被改写指向这里)
+        updateApkProxyRoutes()
         // EMQX REST 代理也收进会话保护:不再允许未登录访客枚举在线设备 / 订阅,
         // 否则等于公开暴露设备指纹与在线状态侦察探针
         authenticate("auth-session") {
@@ -136,7 +139,7 @@ fun Application.module() {
         }
     }
 
-    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /pair, /renew, /update/check, /update/report, /emqx/devices, /emqx/subscriptions")
+    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions")
 }
 
 /** 入口:由 Ktor Gradle 插件的 application.mainClass 指向,委托 Netty EngineMain 读取 application.conf。 */
