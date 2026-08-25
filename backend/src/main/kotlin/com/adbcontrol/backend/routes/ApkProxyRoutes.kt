@@ -2,6 +2,7 @@ package com.adbcontrol.backend.routes
 
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.OutgoingContent
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
@@ -112,10 +113,15 @@ fun Route.updateApkProxyRoutes() {
             )
             APK_PROXY_PASSTHROUGH_HEADERS.forEach { h -> up.header(h)?.let { response.header(h, it) } }
 
-            // HEAD 探测(App 端竞速靠它):只回头部,Content-Length 必须带上
+            // HEAD 探测(App 端竞速靠它):只回头部。
+            // 注意不能手动塞 Content-Length 头再 respond(OK)——空响应体配非 0 长度
+            // 属协议冲突,会被网关判 502。用 OutgoingContent 声明长度由引擎生成头。
             if (headOnly) {
-                up.header(HttpHeaders.ContentLength)?.let { response.header(HttpHeaders.ContentLength, it) }
-                respond(if (up.code == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK)
+                respond(object : OutgoingContent.NoContent() {
+                    override val status =
+                        if (up.code == 206) HttpStatusCode.PartialContent else HttpStatusCode.OK
+                    override val contentLength = up.header(HttpHeaders.ContentLength)?.toLongOrNull()
+                })
                 return
             }
 
