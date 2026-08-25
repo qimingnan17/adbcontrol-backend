@@ -1,10 +1,13 @@
 package com.adbcontrol.backend.routes
 
+import com.adbcontrol.backend.model.UpdateCheckResponse
 import com.adbcontrol.backend.model.UpdateResultReport
 import com.adbcontrol.backend.model.VersionManifest
 import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.UpdateService
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
@@ -14,6 +17,8 @@ import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import java.net.URLEncoder
 
 @Serializable
 private data class Ack(val status: String, val message: String = "")
@@ -38,7 +43,10 @@ fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBri
             )
             return@get
         }
-        call.respond(service.check(deviceId, currentVersionCode, channel))
+        // GitHub 直链改写为后端中转链接:被控端(尤其国内网络)直连/公共代理下载大文件
+        // 常被中间设备掐断(HEAD 能通、传输中断),OTA 反复失败。旧版 App 对非 GitHub
+        // 域名直接走普通 HTTP 下载,天然兼容 —— 无需升级即可受益。
+        call.respond(call.withProxiedApkUrls(service.check(deviceId, currentVersionCode, channel)))
     }
 
     post("/update/report") {
@@ -85,4 +93,36 @@ fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBri
             put("notified", notified)
         })
     }
+}
+
+/** 把响应中的 GitHub 直链(full/patch)改写为 `{本机}/update/apk?url=` 中转链接。 */
+private fun ApplicationCall.withProxiedApkUrls(resp: UpdateCheckResponse): UpdateCheckResponse =
+    resp.copy(
+        fullApkUrl = resp.fullApkUrl?.let { proxiedIfGitHub(it) },
+        patchUrl = resp.patchUrl?.let { proxiedIfGitHub(it) },
+    )
+
+private fun ApplicationCall.proxiedIfGitHub(url: String): String {
+    val host = runCatching { url.toHttpUrlOrNull()?.host?.lowercase() }
+        .getOrNull() ?: return url
+    if (host !in APK_PROXY_ALLOWED_HOSTS) return url
+    return "${selfOriginPrefix()}/update/apk?url=" + URLEncoder.encode(url, "UTF-8")
+}
+
+/**
+ * 本服务对外可达的前缀(协议+主机[+端口]):
+ * - 手动读 Host 头与 X-Forwarded-Proto(fly.dev 等反代会带上);
+ * - Host 头按规范只在非默认端口时带端口,原样使用即可:
+ *   fly.dev → https://adbcontrol-backend.fly.dev,本地开发 → http://localhost:8080。
+ * - HTTP/1.1 起 Host 为必带头,缺失视为非法请求直接报错兜底。
+ */
+private fun ApplicationCall.selfOriginPrefix(): String {
+    val scheme = request.headers["X-Forwarded-Proto"]
+        ?.substringBefore(",")?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?: "http"
+    val host = request.headers[HttpHeaders.Host]
+        ?.trim()?.takeIf { it.isNotBlank() }
+        ?: error("missing Host header")
+    return "$scheme://$host"
 }
