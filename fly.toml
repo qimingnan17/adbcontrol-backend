@@ -33,6 +33,10 @@ primary_region = "sin"
   PORT = "8080"
   KTOR_ENV = "production"
   SESSION_SECURE = "true"
+  # 防 OOM:免费机 256MB,曾因 /update/apk 流式中转 82MB APK 被 cgroup 杀进程
+  # (anon-rss 154MB)。JVM 默认按 RAM 百分比算堆且 direct buffer 无上限,
+  # 这里硬性封顶,给 page cache 留余量。gradle startScripts 启动脚本会读取 JAVA_OPTS。
+  JAVA_OPTS = "-Xmx150m -XX:MaxDirectMemorySize=32m -Xss512k"
   # CORS 白名单(前端 Cloudflare Pages 域名)。取消注释并把域名换成你的 Pages 项目实际域名,
   # 或用 `fly secrets set CORS_ORIGINS=...` 注入(secrets 优先级高于此处 [env])。
   # 不配置则只放行 localhost,Pages 上的前端登录会被 CORS 拦截。
