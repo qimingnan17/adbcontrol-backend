@@ -29,6 +29,12 @@ private data class SetupRequest(
     val password: String,
 )
 
+private fun ApplicationCall.clientIp(): String =
+    request.header("Fly-Client-IP")
+        ?: request.header("CF-Connecting-IP")
+        ?: request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
+        ?: request.local.remoteAddress
+
 fun Route.authRoutes(db: DatabaseService) {
     /**
      * 首次访问初始化流程:前端据此在登录页切换"初始化管理员"模式。
@@ -39,8 +45,7 @@ fun Route.authRoutes(db: DatabaseService) {
     }
 
     post("/api/setup") {
-        val remoteIp = call.request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
-            ?: call.request.local.remoteAddress
+        val remoteIp = call.clientIp()
         if (LoginRateLimiter.isLocked("setup:ip:$remoteIp")) {
             call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "初始化失败次数过多，请 5 分钟后再试"))
             return@post
@@ -80,7 +85,7 @@ fun Route.authRoutes(db: DatabaseService) {
     }
 
     post("/api/login") {
-        val remoteIp = call.request.header("X-Forwarded-For")?.split(",")?.first()?.trim() ?: call.request.local.remoteAddress
+        val remoteIp = call.clientIp()
         if (LoginRateLimiter.isLocked("ip:$remoteIp")) {
             call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "登录失败次数过多，请 5 分钟后再试"))
             return@post
@@ -91,20 +96,22 @@ fun Route.authRoutes(db: DatabaseService) {
             call.respond(HttpStatusCode.BadRequest, mapOf("message" to "用户名和密码不能为空"))
             return@post
         }
-        if (LoginRateLimiter.isLocked("user:${req.username}")) {
-            call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "该账号已被临时锁定"))
+        // 防 DoS:按 ip:user 联合维度限流,避免外部攻击者通过暴破恶意永久锁死合法管理员账号
+        val userIpKey = "user-ip:${req.username.trim()}:$remoteIp"
+        if (LoginRateLimiter.isLocked(userIpKey)) {
+            call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "该账号在此 IP 尝试失败过多已被锁定，请 5 分钟后再试"))
             return@post
         }
         val admin = db.findAdminByUsername(req.username.trim())
         if (admin == null || !PasswordHasher.verify(req.password, admin.passwordHash)) {
             LoginRateLimiter.fail("ip:$remoteIp")
-            LoginRateLimiter.fail("user:${req.username}")
+            LoginRateLimiter.fail(userIpKey)
             call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "用户名或密码错误"))
             return@post
         }
         db.updateAdminLastLogin(admin.id)
         LoginRateLimiter.clear("ip:$remoteIp")
-        LoginRateLimiter.clear("user:${req.username}")
+        LoginRateLimiter.clear(userIpKey)
         call.sessions.set(UserSession(admin.id, admin.username, admin.role))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }

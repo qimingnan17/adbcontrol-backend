@@ -30,7 +30,9 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             logger.warn("DB config incomplete, skipping MySQL init")
         } else {
             dataSource = createPool(dbConfig)
-            runSchema()
+            // 2核4G 部署适配:DB 不可达时 runSchema 的多次建连重试曾把启动线程阻塞
+            // 60s+,HTTP 迟迟不应答。DDL 幂等,移到后台线程执行,失败仅告警。
+            Thread({ runSchema() }, "db-schema-init").apply { isDaemon = true }.start()
             // 管理员账号不在启动时种入:由 /api/setup 在首次访问时初始化(见 AuthRoutes)
         }
     }
@@ -45,14 +47,14 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                 // 暂不强制校验,但关闭 allowPublicKeyRetrieval 以降低中间人重放风险。
                 append("&useSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=false")
                 append("&serverTimezone=Asia/Shanghai")
-                append("&connectTimeout=10000&socketTimeout=10000")
+                append("&connectTimeout=5000&socketTimeout=10000")
             }
             hikari.username = cfg.user
             hikari.password = cfg.password
             hikari.poolName = "adbcontrol-backend"
             hikari.maximumPoolSize = 8            // Bug#10:原 2 过小,提升至 8
             hikari.minimumIdle = 0
-            hikari.connectionTimeout = 10_000
+            hikari.connectionTimeout = 5_000      // 降级运行时 /health 探测不必等 10s
             hikari.leakDetectionThreshold = 60_000  // Bug#10:连接泄漏检测 60s
             hikari.initializationFailTimeout = 0  // 不在建池时因连不上而抛出
             HikariDataSource(hikari)
@@ -101,10 +103,44 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         listOf(
             "ALTER TABLE app_usage_daily ADD COLUMN app_name VARCHAR(128) NULL",
             "ALTER TABLE app_usage_daily ADD COLUMN icon_url VARCHAR(512) NULL",
+            "ALTER TABLE task ADD COLUMN last_fired_at BIGINT NULL",
         ).forEach { ddl ->
             runCatching {
                 ds.connection.use { conn -> conn.createStatement().use { it.execute(ddl) } }
             }.onFailure { logger.info("migrate skipped (likely exists): {}", it.message) }
+        }
+    }
+
+    /** 检查数据库连接池存活状态(供健康检查路由 /health 调用) */
+    fun isHealthy(): Boolean {
+        val ds = dataSource ?: return false
+        return runCatching {
+            ds.connection.use { conn -> conn.isValid(2) }
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 原子记录任务发火时间。成功更新返回 true,已在该时刻或更新时刻发过则返回 false。
+     * 用于多实例并发防重与重启防重。
+     */
+    fun markTaskFired(taskId: Int, fireAt: Long): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: run {
+            logger.error("markTaskFired skipped: DataSource unavailable for taskId={}", taskId)
+            return false
+        }
+        return runCatching {
+            ds.connection.use { conn ->
+                val sql = "UPDATE task SET last_fired_at = ? WHERE task_id = ? AND (last_fired_at IS NULL OR last_fired_at < ?)"
+                conn.prepareStatement(sql).use { ps ->
+                    ps.setLong(1, fireAt)
+                    ps.setInt(2, taskId)
+                    ps.setLong(3, fireAt)
+                    ps.executeUpdate() > 0
+                }
+            }
+        }.getOrElse {
+            logger.error("markTaskFired failed for taskId={}: {}", taskId, it.message)
+            false
         }
     }
 

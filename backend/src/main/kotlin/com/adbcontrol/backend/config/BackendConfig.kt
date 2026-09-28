@@ -28,6 +28,12 @@ data class BackendConfig(
     val emqxAppSecret: String,
     /** EMQX 发布接口路径(拼在 emqxRestEndpoint 之后)。EMQX 5.x=/publish,旧版 4.x=/mqtt/v1/publish。 */
     val emqxPublishPath: String,
+    /** 设备侧 MQTT 是否走 WebSocket(wss)。自部署 EMQX + Cloudflare Tunnel 场景为 true。 */
+    val emqxBrokerWs: Boolean = false,
+    /** useWs=true 时设备连接的 WS 监听端口(CF 隧道场景经 443,直连场景 8083/8084)。 */
+    val emqxBrokerWsPort: Int = 8084,
+    /** WS 路径,EMQX 默认 /mqtt。 */
+    val emqxBrokerWsPath: String = "/mqtt",
     val r2Endpoint: String,
     val r2Bucket: String,
     val r2AccessKey: String,
@@ -46,11 +52,14 @@ data class BackendConfig(
     /** 由模板拼装单设备 Broker 凭证(用户名/密码在配对时签发)。 */
     fun buildBroker(username: String, password: String): BrokerConfig = BrokerConfig(
         host = emqxHost,
-        port = emqxPort,
+        // WS 模式下设备连的是 WS 监听端口,而非裸 TCP TLS 端口
+        port = if (emqxBrokerWs) emqxBrokerWsPort else emqxPort,
         useTls = true,
         appid = emqxAppId,
         username = username,
         password = password,
+        useWs = emqxBrokerWs,
+        wsPath = emqxBrokerWsPath,
     )
 
     /** R2 凭证完整时返回配置,否则返回 null(配对响应里 r2 可空)。 */
@@ -68,7 +77,7 @@ data class BackendConfig(
     }
 
     /** MySQL 配置完整时返回,否则返回 null(DDL 跳过)。 */
-    fun buildDbConfig(): DbConfig? = if (dbHost.isBlank() || dbName.isBlank()) {
+    fun buildDbConfig(): DbConfig? = if (dbHost.isBlank() || dbName.isBlank() || dbPassword.isBlank() || dbPassword == "REPLACE_ME_DB_PASSWORD") {
         null
     } else {
         DbConfig(
@@ -132,6 +141,11 @@ data class BackendConfig(
                 return result
             }
 
+            fun getBool(envKey: String, propKey: String, default: Boolean): Boolean =
+                (System.getenv(envKey)?.takeIf { it.isNotBlank() }
+                    ?: props.getProperty(propKey)?.takeIf { it.isNotBlank() })
+                    ?.equals("true", ignoreCase = true) ?: default
+
             // DB 环境变量存在两套历史命名:fly.toml 注释与 DEPLOY.md 用 ADB_MYSQL_*,
             // 早期实现读 ADB_DB_*。优先文档约定 ADB_MYSQL_*,回退 ADB_DB_*,
             // 避免按文档执行 fly secrets set 后后端仍拿空密码连库。
@@ -151,6 +165,9 @@ data class BackendConfig(
                 emqxRestEndpoint = get("ADB_EMQX_REST_ENDPOINT", "emqx.rest_endpoint", DEFAULT_EMQX_REST),
                 emqxAppSecret = get("ADB_EMQX_APP_SECRET", "emqx.app_secret", ""),
                 emqxPublishPath = get("ADB_EMQX_PUBLISH_PATH", "emqx.publish_path", DEFAULT_EMQX_PUBLISH_PATH),
+                emqxBrokerWs = getBool("ADB_EMQX_BROKER_WS", "emqx.broker_ws", false),
+                emqxBrokerWsPort = getInt("ADB_EMQX_BROKER_WS_PORT", "emqx.broker_ws_port", 8084),
+                emqxBrokerWsPath = get("ADB_EMQX_BROKER_WS_PATH", "emqx.broker_ws_path", "/mqtt"),
                 r2Endpoint = get("ADB_R2_ENDPOINT", "r2.endpoint", DEFAULT_R2_ENDPOINT),
                 r2Bucket = get("ADB_R2_BUCKET", "r2.bucket", DEFAULT_R2_BUCKET),
                 r2AccessKey = get("ADB_R2_ACCESS_KEY", "r2.access_key", ""),

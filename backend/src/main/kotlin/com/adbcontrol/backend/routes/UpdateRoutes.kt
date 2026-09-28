@@ -55,6 +55,23 @@ fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBri
         call.respond(Ack("ok"))
     }
 
+    post("/api/admin/upgrade") {
+        if (!service.verifyPublishToken(call.request.headers["X-Admin-Token"])) {
+            call.respond(HttpStatusCode.Unauthorized, Ack("error", "invalid or missing X-Admin-Token"))
+            return@post
+        }
+        val isWindows = System.getProperty("os.name", "").lowercase().contains("windows")
+        if (isWindows) {
+            runCatching {
+                ProcessBuilder("schtasks", "/run", "/tn", "AdbControlAutoUpdate").start()
+            }.onFailure {
+                call.respond(HttpStatusCode.InternalServerError, Ack("error", "failed to trigger task: ${it.message}"))
+                return@post
+            }
+        }
+        call.respond(Ack("ok", "upgrade scheduled task triggered"))
+    }
+
     post("/api/updates/publish") {
         // 令牌校验放在 body 解析前,避免未授权请求消耗解析资源
         if (!service.verifyPublishToken(call.request.headers["X-Admin-Token"])) {

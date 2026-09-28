@@ -119,7 +119,7 @@ fun Application.module() {
     // 路由:pair / renew / update / emqx-proxy / health + auth + admin
     routing {
         // 放在 authenticate 块之前的路由不受 auth 保护
-        healthRoutes()
+        healthRoutes(databaseService)
         get("/api/health") {
             // 避免 Ktor kotlinx 序列化对 Map<String, Any> 混合类型报错 "Serializing collections of different element types is not yet supported",
             // 显式声明类型为 Map<String, String>

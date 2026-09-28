@@ -10,6 +10,11 @@ import com.adbcontrol.shared.model.StatusReport
 import com.adbcontrol.shared.model.UsageReport
 import com.adbcontrol.shared.net.MqttTopics
 import com.adbcontrol.shared.security.HmacSigner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
@@ -63,6 +68,9 @@ class TelemetryIngestService(
         Thread(r, "ingest-retry").apply { isDaemon = true }
     }
 
+    /** 遥测入库与验签异步协程池,避免同步阻塞 Paho 单一事件派发线程导致连接超时被切断 */
+    private val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /** wire 信封,与被控端 MqttEnvelope 字段一致。 */
     @Serializable
     private data class Envelope(
@@ -105,8 +113,11 @@ class TelemetryIngestService(
 
                 override fun messageArrived(topic: String?, message: MqttMessage?) {
                     if (topic == null || message == null) return
-                    runCatching { handle(topic, message.payload) }
-                        .onFailure { logger.warn("ingest handle failed on {}: {}", topic, it.message) }
+                    val copy = message.payload.clone()
+                    ingestScope.launch {
+                        runCatching { handle(topic, copy) }
+                            .onFailure { logger.warn("ingest handle failed on {}: {}", topic, it.message) }
+                    }
                 }
 
                 override fun deliveryComplete(token: IMqttDeliveryToken?) {}
@@ -309,6 +320,7 @@ class TelemetryIngestService(
 
     override fun close() {
         closed = true
+        ingestScope.cancel()
         runCatching { retryScheduler.shutdownNow() }
         runCatching {
             client?.disconnectForcibly()

@@ -14,3 +14,5 @@ out/
 .idea/
 *.iml
 .DS_Store
+deploy/gh_deploy_key*
+.mimosa/
