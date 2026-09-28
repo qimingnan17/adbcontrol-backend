@@ -1,0 +1,74 @@
+name: Release and Deploy Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'shared/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - 'settings.gradle.kts'
+      - '.github/workflows/release-backend.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build backend distribution zip
+        run: ./gradlew :backend:distZip --no-daemon
+
+      - name: Prepare Release Artifact
+        run: |
+          mkdir -p /tmp/artifacts
+          cp backend/build/distributions/backend.zip /tmp/artifacts/backend.zip
+
+      - name: Publish to GitHub Release (rolling tag: latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Backend Latest Release"
+          body: |
+            Automated backend release from commit ${{ github.sha }}.
+            Built on ${{ github.event.head_commit.timestamp || github.sha }}.
+          files: /tmp/artifacts/backend.zip
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Cloud PC to Auto-Upgrade
+        run: |
+          echo "Notifying Cloud PC to pull and deploy latest release..."
+          TOKEN="${{ secrets.UPGRADE_TOKEN || 'adbcontrol-auto-upgrade-token-2026' }}"
+          # 1. Custom URL from secret (if set)
+          if [ -n "${{ secrets.CLOUD_PC_UPGRADE_URL }}" ]; then
+            echo "Trying configured CLOUD_PC_UPGRADE_URL..."
+            curl -s -X POST "${{ secrets.CLOUD_PC_UPGRADE_URL }}" -H "X-Admin-Token: $TOKEN" || true
+          fi
+          # 2. Native Public IPv6 direct route
+          echo "Triggering via Native IPv6..."
+          curl -s -g -X POST "http://[240e:981:9200:3:15f::3b1]:8080/api/admin/upgrade" -H "X-Admin-Token: $TOKEN" || true
+          # 3. Cloudflare Tunnel fallback
+          echo "Triggering via Cloudflare Tunnel..."
+          curl -s -X POST "https://greater-integrated-bell-eligibility.trycloudflare.com/api/admin/upgrade" -H "X-Admin-Token: $TOKEN" || true
+

@@ -17,6 +17,10 @@ data class BrokerConfig(
     val password: String,
     val cleanSession: Boolean = false,
     val keepAliveSec: Int = 60,
+    /** MQTT over WebSocket(wss/ws)。自部署 EMQX 走 Cloudflare Tunnel 场景,见 :shared 镜像说明。 */
+    val useWs: Boolean = false,
+    /** WebSocket 路径,EMQX 默认 /mqtt */
+    val wsPath: String = "/mqtt",
 )
 
 @Serializable

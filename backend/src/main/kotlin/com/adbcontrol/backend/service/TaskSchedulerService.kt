@@ -89,6 +89,8 @@ class TaskSchedulerService(
             else db.listDevicesWithStatus().map { it.deviceId }
             if (targets.isEmpty()) continue
 
+            if (!db.markTaskFired(taskId, fireAt)) continue
+
             // 先用 fireAt 占位再放发,避免长下发期间下次 tick 重发同一时刻
             lastFire = lastFire + (taskId to fireAt)
             scope.launch {

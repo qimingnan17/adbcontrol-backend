@@ -24,6 +24,8 @@ data class AppConfig(
     val expiresAt: Long = 0,
     /** 后端服务器 URL(OTA 更新检查 /update/check 与结果上报 /update/report 用) */
     val serverUrl: String = "",
+    /** 配对令牌(用于凭证临期自动向 /renew 续签身份证明) */
+    val pairToken: String = "",
 )
 
 @Serializable
@@ -38,6 +40,15 @@ data class BrokerConfig(
     val cleanSession: Boolean = false,
     /** keepAlive 秒,默认 60 */
     val keepAliveSec: Int = 60,
+    /**
+     * MQTT over WebSocket(wss/ws)。自部署 EMQX 走 Cloudflare Tunnel 时的传输方式:
+     * 隧道只转发 HTTP(S)/WebSocket,裸 TCP MQTT 无法过 CF,需切换为 wss://。
+     * false = 传统裸 TCP(ssl://host:port),EMQX Cloud / IPv6 直连场景保持不变。
+     * useWs=true 时 port 应为 WS 监听端口(后端签发时由 emqx.broker_ws_port 决定)。
+     */
+    val useWs: Boolean = false,
+    /** WebSocket 路径,EMQX 默认 /mqtt */
+    val wsPath: String = "/mqtt",
 )
 
 @Serializable
