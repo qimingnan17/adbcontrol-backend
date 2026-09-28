@@ -37,7 +37,7 @@ jobs:
       - name: Build backend distribution zip
         run: ./gradlew :backend:distZip --no-daemon
 
-      - name: Publish to GitHub Release (rolling tag: latest)
+      - name: "Publish to GitHub Release (rolling tag: latest)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
