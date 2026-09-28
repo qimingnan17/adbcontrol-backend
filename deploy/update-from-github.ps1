@@ -8,13 +8,15 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $uploadDir = Join-Path $AppHome "upload"
-if (-not (Test-Path $uploadDir)) { New-Item -ItemType Directory -Path $uploadDir -Force | Out-Null }
+if (-not (Test-Path $uploadDir)) {
+    New-Item -ItemType Directory -Path $uploadDir -Force | Out-Null
+}
 $destZip = Join-Path $uploadDir "backend.zip"
 
 $mirrors = @(
-    "https://ghproxy.net/",
     "https://gh-proxy.com/",
-    "" # 直连兜底
+    "https://ghproxy.net/",
+    ""
 )
 
 $rawUrl = "https://github.com/$Repo/releases/download/$Tag/backend.zip"
@@ -28,15 +30,27 @@ foreach ($mirror in $mirrors) {
     $targetUrl = "$mirror$rawUrl"
     Write-Host "`n[1/3] 尝试从源下载: $targetUrl" -ForegroundColor Green
     try {
-        if (Test-Path $destZip) { Remove-Item $destZip -Force }
-        Invoke-WebRequest -Uri $targetUrl -OutFile $destZip -TimeoutSec 120 -UseBasicParsing
-        if ((Test-Path $destZip) -and ((Get-Item $destZip).Length -gt 1048576)) {
-            $mb = [math]::Round((Get-Item $destZip).Length / 1MB, 2)
-            Write-Host "下载成功！产物大小: $mb MB" -ForegroundColor Green
-            $downloaded = $true
-            break
+        if (Test-Path $destZip) {
+            Remove-Item $destZip -Force
+        }
+
+        if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+            curl.exe -L -s --connect-timeout 10 -m 60 "$targetUrl" -o "$destZip"
         } else {
-            Write-Host "下载的文件过小或无效，尝试下一个镜像..." -ForegroundColor Yellow
+            Invoke-WebRequest -Uri $targetUrl -OutFile $destZip -TimeoutSec 120 -UseBasicParsing
+        }
+
+        if (Test-Path $destZip) {
+            $len = (Get-Item $destZip).Length
+            if ($len -gt 15728640) {
+                $mb = [math]::Round($len / 1MB, 2)
+                Write-Host "下载成功！产物完整大小: $mb MB" -ForegroundColor Green
+                $downloaded = $true
+                break
+            } else {
+                $curMb = [math]::Round($len / 1MB, 2)
+                Write-Host "下载的文件不完整 (当前大小: $curMb MB < 15 MB)，尝试下一个镜像..." -ForegroundColor Yellow
+            }
         }
     } catch {
         Write-Host "下载失败: $($_.Exception.Message)，尝试下一个镜像..." -ForegroundColor Yellow
