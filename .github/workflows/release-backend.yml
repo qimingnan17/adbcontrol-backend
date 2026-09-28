@@ -35,7 +35,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build backend distribution zip
-        run: ./gradlew :backend:distZip --no-daemon
+        run: chmod +x ./gradlew && ./gradlew :backend:distZip --no-daemon
 
       - name: "Publish to GitHub Release (rolling tag: latest)"
         env:
