@@ -84,6 +84,26 @@
 
 `adbcontrol-web/dist/` 已重新构建并同步至 `backend/src/main/resources/static/`（40 个资源文件 + `index.html`）。
 
+### 4.5 前端产物自动同步（`syncWebDist`）
+
+为替代此前每次手动执行的 `cp -r adbcontrol-web/dist/* .../static/`，在 `backend/build.gradle.kts` 中新增 Gradle 任务 `syncWebDist`（`Sync` 类型），并挂到 `processResources` 之前：
+
+```bash
+# 本地开发：构建前端后，直接构建/运行后端即可，产物会自动同步进 static
+cd adbcontrol-web && npm run build
+cd ../adbcontrol-backend && ./gradlew :backend:run     # 或 :backend:distZip / :backend:jar
+
+# 也可单独手动触发
+./gradlew :backend:syncWebDist
+```
+
+行为说明：
+
+- 源目录 `../adbcontrol-web/dist`（相对后端仓库根）存在 `index.html` 时才执行；
+- 采用 `Sync` 镜像语义，会删除 `static` 中不属于 dist 的旧哈希文件，避免残留；
+- **CI / Fly 场景**仅 checkout 后端仓库、没有前端源码，任务自动跳过，回退使用仓库中已提交的 `src/main/resources/static`；
+- 同步后 `static` 会出现改动，照常提交后端仓库即可（保持 CI 兜底的那份产物不过期）。
+
 ---
 
 ## 五、接口变更清单

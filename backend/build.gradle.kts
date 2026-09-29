@@ -64,3 +64,29 @@ dependencies {
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
 }
+
+// ============ 前端构建产物自动同步 ============
+// 将 ../adbcontrol-web/dist 镜像进后端静态资源目录，替代此前手动执行的：
+//   cp -r adbcontrol-web/dist/* adbcontrol-backend/backend/src/main/resources/static/
+//
+// 行为说明：
+//  - 本地（monorepo 同级 checkout）构建时会自动把最新前端产物同步进 static，构建即生效；
+//  - CI / Fly 等仅 checkout 后端仓库的场景下没有 ../adbcontrol-web/dist，任务自动跳过，
+//    回退使用仓库中已提交的 src/main/resources/static。
+//  - Sync 为镜像语义：会删除 static 中不属于 dist 的旧哈希文件，避免残留。
+val webDistDir = rootProject.projectDir.parentFile.resolve("adbcontrol-web/dist")
+
+val syncWebDist by tasks.registering(Sync::class) {
+    description = "同步前端构建产物 (../adbcontrol-web/dist) 到后端静态资源目录"
+    group = "build"
+    onlyIf { webDistDir.resolve("index.html").isFile }
+    from(webDistDir)
+    into(layout.projectDirectory.dir("src/main/resources/static"))
+    doFirst { logger.lifecycle("[syncWebDist] $webDistDir -> src/main/resources/static") }
+}
+
+// 在资源处理前完成同步，确保 processResources / jar / distZip / run 都打包到最新前端
+// （dist 不存在时该任务会被跳过，不影响后端独立构建）
+tasks.named("processResources") {
+    dependsOn(syncWebDist)
+}
