@@ -193,7 +193,8 @@ class CloudflareService : AutoCloseable {
                     uuid = uuid,
                     name = name,
                     version = version,
-                    createdAt = createdAt
+                    createdAt = createdAt,
+                    accountId = accountId
                 )
             }
         } catch (e: Exception) {

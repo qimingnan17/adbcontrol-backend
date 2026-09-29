@@ -60,6 +60,14 @@ data class CfSecrets(
 )
 
 @Serializable
+data class D1Secrets(
+    val databaseId: String = "",
+    val databaseName: String = "",
+    val accountId: String = "",
+    val hasConfig: Boolean = false
+)
+
+@Serializable
 data class SecretsResponse(
     val filePath: String,
     val exists: Boolean,
@@ -67,7 +75,8 @@ data class SecretsResponse(
     val emqx: EmqxSecrets,
     val server: ServerSecrets,
     val db: DbSecrets,
-    val cf: CfSecrets = CfSecrets()
+    val cf: CfSecrets = CfSecrets(),
+    val d1: D1Secrets = D1Secrets()
 )
 
 @Serializable
