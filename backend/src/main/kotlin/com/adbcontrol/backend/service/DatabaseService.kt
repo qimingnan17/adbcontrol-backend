@@ -43,10 +43,14 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             hikari.jdbcUrl = buildString {
                 append("jdbc:mysql://").append(cfg.host).append(':').append(cfg.port).append('/').append(cfg.name)
                 append("?useUnicode=true&characterEncoding=UTF-8")
-                // Bug#7:启用 SSL 加密(useSSL=true);远端 sqlpub 证书不一定可信,
-                // 暂不强制校验,但关闭 allowPublicKeyRetrieval 以降低中间人重放风险。
-                append("&useSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=false")
+                val isLocal = cfg.host == "127.0.0.1" || cfg.host.equals("localhost", ignoreCase = true)
+                if (isLocal) {
+                    append("&useSSL=false&allowPublicKeyRetrieval=true")
+                } else {
+                    append("&useSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=false")
+                }
                 append("&serverTimezone=Asia/Shanghai")
+
                 append("&connectTimeout=5000&socketTimeout=10000")
             }
             hikari.username = cfg.user
