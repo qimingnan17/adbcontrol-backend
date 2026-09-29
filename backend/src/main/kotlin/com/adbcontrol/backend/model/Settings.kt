@@ -51,7 +51,12 @@ data class DbSecrets(
 @Serializable
 data class CfSecrets(
     val apiToken: String = "",
-    val hasApiToken: Boolean = false
+    val hasApiToken: Boolean = false,
+    val teamDomain: String = "",
+    val oidcClientId: String = "",
+    val oidcClientSecret: String = "",
+    val hasOidcClientSecret: Boolean = false,
+    val oidcRedirectUri: String = ""
 )
 
 @Serializable

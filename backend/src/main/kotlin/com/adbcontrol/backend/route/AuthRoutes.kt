@@ -37,6 +37,29 @@ private fun ApplicationCall.clientIp(): String =
         ?: request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
         ?: request.local.remoteAddress
 
+private fun ApplicationCall.clientOrigin(): String {
+    val proto = request.header("X-Forwarded-Proto")
+        ?: request.header("CF-Visitor")?.let { if (it.contains("https")) "https" else "http" }
+        ?: if (request.local.scheme.isNotBlank()) request.local.scheme else "http"
+    val host = request.header("X-Forwarded-Host")
+        ?: request.header("Host")
+        ?: "localhost:8080"
+    return "$proto://$host"
+}
+
+private data class OidcStateInfo(
+    val origin: String,
+    val redirectUri: String,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+private val oidcStateCache = java.util.concurrent.ConcurrentHashMap<String, OidcStateInfo>()
+
+private fun cleanExpiredOidcStates() {
+    val now = System.currentTimeMillis()
+    oidcStateCache.entries.removeIf { now - it.value.createdAt > 600_000 }
+}
+
 fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settingsService: SettingsService) {
     /**
      * 首次访问初始化流程:前端据此在登录页切换"初始化管理员"模式。
@@ -196,6 +219,97 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         }
         call.sessions.set(UserSession(admin.id, admin.username, admin.role))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
+    }
+
+    /**
+     * 获取 Cloudflare Zero Trust (Access) OIDC 授权跳转地址。
+     * 前端点击「Cloudflare 官方账号登录」时调用，拉起官方登录页。
+     */
+    get("/api/auth/cf-oidc/authorize-url") {
+        val teamDomain = settingsService.getRawProperty("cf.team_domain")
+        val clientId = settingsService.getRawProperty("cf.oidc_client_id")
+        if (teamDomain.isBlank() || clientId.isBlank()) {
+            call.respond(
+                CfOidcAuthUrlResponse(
+                    configured = false,
+                    message = "尚未配置 Cloudflare OIDC 单点登录。请先在「系统设置」->「Cloudflare 资源中心」中配置团队域名与 OIDC 客户端 ID，或使用 API Token / 账号密码登录。"
+                )
+            )
+            return@get
+        }
+
+        val originParam = call.request.queryParameters["origin"]?.trim()
+        val origin = if (!originParam.isNullOrBlank()) originParam.trimEnd('/') else call.clientOrigin().trimEnd('/')
+
+        val customRedirect = settingsService.getRawProperty("cf.oidc_redirect_uri")
+        val redirectUri = if (customRedirect.isNotBlank()) customRedirect else "$origin/api/auth/cf-oidc/callback"
+
+        cleanExpiredOidcStates()
+        val state = UUID.randomUUID().toString()
+        oidcStateCache[state] = OidcStateInfo(origin = origin, redirectUri = redirectUri)
+
+        val domain = teamDomain.removePrefix("https://").removePrefix("http://").trimEnd('/').substringBefore("/cdn-cgi")
+        val authUrl = "https://$domain/cdn-cgi/access/sso/oidc/$clientId/authorization?response_type=code&client_id=$clientId&redirect_uri=${redirectUri.encodeURLParameter()}&scope=openid%20profile%20email&state=$state"
+
+        call.respond(CfOidcAuthUrlResponse(configured = true, authUrl = authUrl))
+    }
+
+    /**
+     * Cloudflare Zero Trust (Access) OIDC 认证回调端点。
+     * 官方授权成功后跳转至此，置换身份并建立管理员会话，随后跳回前端。
+     */
+    get("/api/auth/cf-oidc/callback") {
+        val code = call.request.queryParameters["code"]
+        val state = call.request.queryParameters["state"]
+        val error = call.request.queryParameters["error"]
+        val errorDesc = call.request.queryParameters["error_description"]
+
+        val stateInfo = if (!state.isNullOrBlank()) oidcStateCache.remove(state) else null
+        val origin = stateInfo?.origin ?: settingsService.getRawProperty("server.url").ifBlank { call.clientOrigin() }.trimEnd('/')
+
+        if (!error.isNullOrBlank() || code.isNullOrBlank()) {
+            val msg = errorDesc ?: error ?: "授权已被取消或中断"
+            call.respondRedirect("$origin/login?cf_error=${msg.encodeURLParameter()}")
+            return@get
+        }
+
+        if (stateInfo == null) {
+            call.respondRedirect("$origin/login?cf_error=${"授权请求已失效或过期，请重新登录".encodeURLParameter()}")
+            return@get
+        }
+
+        val teamDomain = settingsService.getRawProperty("cf.team_domain")
+        val clientId = settingsService.getRawProperty("cf.oidc_client_id")
+        val clientSecret = settingsService.getRawProperty("cf.oidc_client_secret")
+
+        val (ok, userInfo) = cfService.exchangeOidcCode(
+            teamDomain = teamDomain,
+            clientId = clientId,
+            clientSecret = clientSecret,
+            code = code,
+            redirectUri = stateInfo.redirectUri
+        )
+
+        if (!ok || userInfo == null || userInfo.email.isBlank()) {
+            call.respondRedirect("$origin/login?cf_error=${"Cloudflare 身份验证置换失败，请检查 Client Secret 是否有效".encodeURLParameter()}")
+            return@get
+        }
+
+        var admin = db.getPrimaryAdmin()
+        if (admin == null) {
+            val username = userInfo.email.substringBefore("@").filter { it.isLetterOrDigit() || it in "_.-" }.take(32)
+                .ifEmpty { "cf_admin" }
+            admin = db.createInitialAdmin(username, UUID.randomUUID().toString())
+        }
+
+        if (admin == null) {
+            call.respondRedirect("$origin/login?cf_error=${"无法绑定或初始化管理员账号".encodeURLParameter()}")
+            return@get
+        }
+
+        db.updateAdminLastLogin(admin.id)
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.respondRedirect("$origin/?cf_sso=success")
     }
 
     authenticate("auth-session") {

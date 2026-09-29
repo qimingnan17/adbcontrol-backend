@@ -7,9 +7,12 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.request.forms.submitForm
+import io.ktor.http.Parameters
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
+import java.util.Base64
 
 class CloudflareService : AutoCloseable {
     private val logger = LoggerFactory.getLogger(CloudflareService::class.java)
@@ -200,7 +203,27 @@ class CloudflareService : AutoCloseable {
     }
 
     /**
-     * 自动聚合拉取 Cloudflare 所有的授权资源：账户、域名、隧道、R2 桶、D1 数据库。
+     * 获取账户下的 Cloudflare Zero Trust Access Organization (Team Domain)。
+     */
+    suspend fun fetchAccessOrg(apiToken: String, accountId: String): CfAccessOrg? {
+        return try {
+            val response = httpClient.get("$cfBase/accounts/$accountId/access/organizations") {
+                header("Authorization", "Bearer ${apiToken.trim()}")
+            }
+            if (response.status != HttpStatusCode.OK) return null
+            val root = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            val result = root["result"]?.jsonObject ?: return null
+            val authDomain = result["auth_domain"]?.jsonPrimitive?.contentOrNull ?: return null
+            val name = result["name"]?.jsonPrimitive?.contentOrNull ?: ""
+            CfAccessOrg(name = name, authDomain = authDomain)
+        } catch (e: Exception) {
+            logger.warn("Cloudflare fetchAccessOrg error: {}", e.message)
+            null
+        }
+    }
+
+    /**
+     * 自动聚合拉取 Cloudflare 所有的授权资源：账户、Access Org、域名、隧道、R2 桶、D1 数据库。
      */
     suspend fun fetchAllResources(apiToken: String): CfAllResources {
         val tokenInfo = verifyToken(apiToken)
@@ -218,8 +241,12 @@ class CloudflareService : AutoCloseable {
         val tunnels = mutableListOf<CfTunnel>()
         val r2Buckets = mutableListOf<CfR2Bucket>()
         val d1Databases = mutableListOf<CfD1Database>()
+        var accessOrg: CfAccessOrg? = null
 
         for (acc in accounts) {
+            if (accessOrg == null) {
+                accessOrg = fetchAccessOrg(apiToken, acc.id)
+            }
             tunnels.addAll(fetchTunnels(apiToken, acc.id))
             r2Buckets.addAll(fetchR2Buckets(apiToken, acc.id))
             d1Databases.addAll(fetchD1Databases(apiToken, acc.id))
@@ -229,12 +256,95 @@ class CloudflareService : AutoCloseable {
             valid = true,
             tokenInfo = tokenInfo,
             accounts = accounts,
+            accessOrg = accessOrg,
             zones = zones,
             tunnels = tunnels,
             r2Buckets = r2Buckets,
             d1Databases = d1Databases,
             message = "成功获取 Cloudflare 资源列表"
         )
+    }
+
+    /**
+     * 通过 Cloudflare Zero Trust (Access) OIDC 授权码置换身份信息。
+     */
+    suspend fun exchangeOidcCode(
+        teamDomain: String,
+        clientId: String,
+        clientSecret: String,
+        code: String,
+        redirectUri: String
+    ): Pair<Boolean, CfOidcUserInfo?> {
+        val domain = teamDomain.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trimEnd('/')
+            .substringBefore("/cdn-cgi")
+
+        val tokenUrl = "https://$domain/cdn-cgi/access/sso/oidc/$clientId/token"
+        return try {
+            val response = httpClient.submitForm(
+                url = tokenUrl,
+                formParameters = Parameters.build {
+                    append("grant_type", "authorization_code")
+                    append("client_id", clientId.trim())
+                    append("client_secret", clientSecret.trim())
+                    append("code", code.trim())
+                    append("redirect_uri", redirectUri.trim())
+                }
+            )
+            val text = response.bodyAsText()
+            if (response.status != HttpStatusCode.OK) {
+                logger.warn("OIDC token exchange failed: {} {}", response.status, text)
+                return false to null
+            }
+            val root = json.parseToJsonElement(text).jsonObject
+            val accessToken = root["access_token"]?.jsonPrimitive?.contentOrNull
+            val idToken = root["id_token"]?.jsonPrimitive?.contentOrNull
+
+            var email: String? = null
+            var name: String? = null
+            var sub: String? = null
+
+            // 1. 尝试从 userinfo 接口拉取
+            if (!accessToken.isNullOrBlank()) {
+                try {
+                    val userinfoUrl = "https://$domain/cdn-cgi/access/sso/oidc/$clientId/userinfo"
+                    val userinfoResp = httpClient.get(userinfoUrl) {
+                        header("Authorization", "Bearer $accessToken")
+                    }
+                    if (userinfoResp.status == HttpStatusCode.OK) {
+                        val uRoot = json.parseToJsonElement(userinfoResp.bodyAsText()).jsonObject
+                        email = uRoot["email"]?.jsonPrimitive?.contentOrNull
+                        name = uRoot["name"]?.jsonPrimitive?.contentOrNull
+                        sub = uRoot["sub"]?.jsonPrimitive?.contentOrNull
+                    }
+                } catch (e: Exception) {
+                    logger.warn("OIDC userinfo fetch failed, falling back to id_token", e)
+                }
+            }
+
+            // 2. 兜底策略：直接解析 id_token JWT payload
+            if (email.isNullOrBlank() && !idToken.isNullOrBlank()) {
+                val parts = idToken.split(".")
+                if (parts.size >= 2) {
+                    val payloadBytes = Base64.getUrlDecoder().decode(parts[1])
+                    val idRoot = json.parseToJsonElement(payloadBytes.decodeToString()).jsonObject
+                    email = idRoot["email"]?.jsonPrimitive?.contentOrNull
+                    name = idRoot["name"]?.jsonPrimitive?.contentOrNull ?: name
+                    sub = idRoot["sub"]?.jsonPrimitive?.contentOrNull ?: sub
+                }
+            }
+
+            if (!email.isNullOrBlank()) {
+                true to CfOidcUserInfo(email = email, name = name, sub = sub)
+            } else {
+                false to null
+            }
+        } catch (e: Exception) {
+            logger.error("OIDC exchange error", e)
+            false to null
+        }
     }
 
     override fun close() {

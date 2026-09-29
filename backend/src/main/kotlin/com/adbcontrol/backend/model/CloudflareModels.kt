@@ -41,6 +41,12 @@ data class CfD1Database(
 )
 
 @Serializable
+data class CfAccessOrg(
+    val name: String = "",
+    val authDomain: String = ""
+)
+
+@Serializable
 data class CfTokenVerifyInfo(
     val valid: Boolean,
     val tokenId: String? = null,
@@ -53,6 +59,7 @@ data class CfAllResources(
     val valid: Boolean,
     val tokenInfo: CfTokenVerifyInfo? = null,
     val accounts: List<CfAccount> = emptyList(),
+    val accessOrg: CfAccessOrg? = null,
     val zones: List<CfZone> = emptyList(),
     val tunnels: List<CfTunnel> = emptyList(),
     val r2Buckets: List<CfR2Bucket> = emptyList(),
@@ -83,4 +90,26 @@ data class CfApplyR2Request(
 @Serializable
 data class CfApplyTunnelRequest(
     val serverUrl: String
+)
+
+@Serializable
+data class CfApplyOidcRequest(
+    val teamDomain: String,
+    val clientId: String,
+    val clientSecret: String? = null,
+    val redirectUri: String? = null
+)
+
+@Serializable
+data class CfOidcAuthUrlResponse(
+    val configured: Boolean,
+    val authUrl: String? = null,
+    val message: String? = null
+)
+
+@Serializable
+data class CfOidcUserInfo(
+    val email: String,
+    val name: String? = null,
+    val sub: String? = null
 )

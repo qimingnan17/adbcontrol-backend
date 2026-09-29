@@ -160,8 +160,11 @@ fun Route.settingsRoutes(settingsService: SettingsService, cfService: Cloudflare
                 }
                 val resources = cfService.fetchAllResources(token)
                 if (resources.valid && token.isNotEmpty() && !token.contains("******")) {
-                    // 同步成功后自动记录 token 至 secrets
-                    settingsService.saveSecrets(mapOf("cf.api_token" to token))
+                    val updates = mutableMapOf("cf.api_token" to token)
+                    if (resources.accessOrg != null && resources.accessOrg.authDomain.isNotBlank() && settingsService.getRawProperty("cf.team_domain").isBlank()) {
+                        updates["cf.team_domain"] = resources.accessOrg.authDomain
+                    }
+                    settingsService.saveSecrets(updates)
                 }
                 call.respond(resources)
             }
@@ -207,6 +210,35 @@ fun Route.settingsRoutes(settingsService: SettingsService, cfService: Cloudflare
                     call.respond(SettingsOperationResponse(ok = true, message = "已将 Cloudflare 隧道域名设为服务地址"))
                 } else {
                     call.respond(HttpStatusCode.InternalServerError, SettingsOperationResponse(ok = false, message = "保存服务地址失败"))
+                }
+            }
+
+            // 保存 Cloudflare Zero Trust (OIDC) 授权登录配置
+            post("/cloudflare/apply-oidc") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfApplyOidcRequest>() }.getOrNull()
+                if (req == null || req.teamDomain.isBlank() || req.clientId.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        SettingsOperationResponse(ok = false, message = "Team Domain 与 Client ID 不能为空")
+                    )
+                    return@post
+                }
+                val updates = mutableMapOf(
+                    "cf.team_domain" to req.teamDomain.trim(),
+                    "cf.oidc_client_id" to req.clientId.trim()
+                )
+                if (!req.clientSecret.isNullOrBlank() && !req.clientSecret.contains("******")) {
+                    updates["cf.oidc_client_secret"] = req.clientSecret.trim()
+                }
+                if (!req.redirectUri.isNullOrBlank()) {
+                    updates["cf.oidc_redirect_uri"] = req.redirectUri.trim()
+                }
+                val ok = settingsService.saveSecrets(updates)
+                if (ok) {
+                    call.respond(SettingsOperationResponse(ok = true, message = "已成功保存 Cloudflare Zero Trust (OIDC) 授权配置"))
+                } else {
+                    call.respond(HttpStatusCode.InternalServerError, SettingsOperationResponse(ok = false, message = "保存 OIDC 配置失败"))
                 }
             }
         }
