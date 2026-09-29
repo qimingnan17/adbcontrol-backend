@@ -55,6 +55,17 @@ data class CfTokenVerifyInfo(
     val message: String? = null
 )
 
+/** 各类 Cloudflare 资源读取失败的真实原因（空表示该类资源读取成功） */
+@Serializable
+data class CfResourceErrors(
+    val accounts: String? = null,
+    val zones: String? = null,
+    val tunnels: String? = null,
+    val r2: String? = null,
+    val d1: String? = null,
+    val accessOrg: String? = null
+)
+
 @Serializable
 data class CfAllResources(
     val valid: Boolean,
@@ -65,6 +76,7 @@ data class CfAllResources(
     val tunnels: List<CfTunnel> = emptyList(),
     val r2Buckets: List<CfR2Bucket> = emptyList(),
     val d1Databases: List<CfD1Database> = emptyList(),
+    val errors: CfResourceErrors? = null,
     val message: String? = null
 )
 
@@ -133,6 +145,52 @@ data class CfAutoBindResponse(
     val boundTunnel: String? = null,
     val boundR2: String? = null,
     val boundD1: String? = null,
+    val message: String
+)
+
+@Serializable
+data class CfProvisionTunnelRequest(
+    val subdomain: String,
+    val zoneId: String? = null,
+    val zoneName: String? = null,
+    val tunnelId: String? = null,
+    val tunnelName: String? = null,
+    val localPort: Int = 8080,
+    /** 是否同时开启 MQTT over WSS 双栈通道（追加入口规则 /mqtt → EMQX:8084） */
+    val enableMqttWss: Boolean = false,
+    val apiToken: String? = null
+)
+
+@Serializable
+data class CfCreateTunnelRequest(
+    val name: String,
+    val apiToken: String? = null
+)
+
+@Serializable
+data class CfCreateTunnelResponse(
+    val ok: Boolean,
+    val tunnelId: String? = null,
+    val tunnelName: String? = null,
+    val message: String
+)
+
+@Serializable
+data class CfProvisionStep(
+    val step: String,
+    val ok: Boolean,
+    val detail: String? = null
+)
+
+@Serializable
+data class CfProvisionTunnelResponse(
+    val ok: Boolean,
+    val hostname: String = "",
+    val serverUrl: String = "",
+    val tunnelId: String? = null,
+    val tunnelName: String? = null,
+    val connectorCommand: String? = null,
+    val steps: List<CfProvisionStep> = emptyList(),
     val message: String
 )
 

@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统设置 · 功能重排 — 交互原型</title>
+<style>
+  /* ============ 占位配色（后补）——中性浅色 + 单一青色强调 ============ */
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --border: #e4e8ee;
+    --text: #1f2937;
+    --text-2: #64748b;
+    --text-3: #94a3b8;
+    --accent: #0891b2;
+    --accent-bg: #e8f6fa;
+    --ok: #16a34a;
+    --ok-bg: #f0fdf4;
+    --warn: #d97706;
+    --warn-bg: #fffbeb;
+    --danger: #dc2626;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 14px; padding-bottom: 80px;
+  }
+  code, .mono { font-family: var(--mono); }
+
+  /* ============ 原型工具条（非正式 UI） ============ */
+  .demo-toolbar {
+    position: sticky; top: 0; z-index: 50; background: #111827; color: #e5e7eb;
+    padding: 8px 16px; display: flex; align-items: center; gap: 14px; font-size: 12px; flex-wrap: wrap;
+  }
+  .demo-toolbar b { color: #67e8f9; font-weight: 600; }
+  .demo-toolbar .seg { display: inline-flex; border: 1px solid #374151; border-radius: 6px; overflow: hidden; }
+  .demo-toolbar .seg button { background: transparent; color: #9ca3af; border: 0; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .demo-toolbar .seg button.on { background: #0891b2; color: #fff; }
+
+  /* ============ 骨架 ============ */
+  .page { max-width: 1080px; margin: 0 auto; padding: 20px 24px; }
+  .page-head {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 20px; margin-bottom: 16px;
+  }
+  .page-head h1 { font-size: 18px; font-weight: 600; }
+  .page-head .sub { color: var(--text-3); font-size: 12.5px; margin-top: 3px; }
+  .page-head .acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  .dirty-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--warn); background: var(--warn-bg); padding: 4px 10px; border-radius: 999px; }
+  .dirty-dot .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+
+  /* 访问门 */
+  .gate { text-align: center; padding: 44px 24px; }
+  .gate .g-ico { font-size: 34px; margin-bottom: 12px; }
+  .gate h2 { font-size: 17px; font-weight: 600; margin-bottom: 10px; }
+  .gate p { color: var(--text-2); font-size: 13px; line-height: 1.7; max-width: 560px; margin: 0 auto 6px; }
+  .gate .row-acts { justify-content: center; margin-top: 20px; }
+
+  .tabs {
+    display: flex; gap: 4px; background: var(--card); flex-wrap: wrap;
+    border: 1px solid var(--border); border-radius: var(--radius); padding: 6px; margin-bottom: 16px;
+  }
+  .tabs button { border: 0; background: transparent; color: var(--text-2); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13.5px; }
+  .tabs button.on { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+
+  .panel { display: none; flex-direction: column; gap: 16px; }
+  .panel.show { display: flex; }
+
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  .panel .card { margin-bottom: 0; }
+  .card h2 { font-size: 15px; font-weight: 600; }
+  .card .desc { color: var(--text-2); font-size: 12.5px; margin-top: 3px; }
+
+  .sec-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .sec-status { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  /* ============ 按钮 ============ */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; padding: 7px 14px; font-size: 13px;
+    cursor: pointer; border: 1px solid var(--border); background: #fff; color: var(--text); transition: all .15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); color: #fff; }
+  .btn.warn { background: #fff; border-color: #f4c68a; color: var(--warn); }
+  .btn.warn:hover { border-color: var(--warn); }
+  .btn.link { border: 0; background: transparent; color: var(--accent); padding: 4px 6px; font-size: 12.5px; }
+  .btn.subtle { color: var(--text-2); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .row-acts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+
+  /* ============ 标签 ============ */
+  .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 500; white-space: nowrap; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge.gray { background: #f1f5f9; color: var(--text-2); }
+  .badge.accent { background: var(--accent-bg); color: var(--accent); }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .badge.ok .dot { background: var(--ok); }
+  .badge.warn .dot { background: var(--warn); }
+  .badge.gray .dot { background: var(--text-3); }
+  .badge.accent .dot { background: var(--accent); }
+
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+  .tag.green { background: var(--ok-bg); color: var(--ok); }
+  .tag.gray { background: #f1f5f9; color: var(--text-2); }
+  .tag.accent { background: var(--accent-bg); color: var(--accent); }
+
+  /* ============ 表单 ============ */
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+  .form-grid .col-span-2 { grid-column: 1 / -1; }
+  @media (max-width: 720px) { .form-grid { grid-template-columns: 1fr; } }
+  .field label { display: block; font-size: 12.5px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
+  .field .hint { display: block; font-size: 11.5px; color: var(--text-3); margin-top: 5px; line-height: 1.5; }
+  .input, select.input {
+    width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+    font-size: 13.5px; background: #fff; color: var(--text); outline: none;
+  }
+  .input:focus { border-color: var(--accent); }
+  .input:disabled { background: #f8fafc; color: var(--text-3); }
+  .input-wrap { display: flex; gap: 8px; }
+  .input-wrap .input { flex: 1; }
+  .sub-check { display: block; font-size: 12px; margin-top: 6px; min-height: 16px; }
+  .sub-check.good { color: var(--ok); }
+  .sub-check.bad { color: var(--danger); }
+
+  /* ============ 总览 ============ */
+  .ov-summary {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: linear-gradient(135deg, #f0fdfa 0%, #e8f6fa 100%);
+    border: 1px solid #a5e3f2; border-radius: var(--radius); padding: 14px 18px; font-size: 13px;
+  }
+  .ov-summary b { color: var(--accent); }
+  .ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .ov-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 8px;
+    background: #fbfcfe; transition: border-color .15s, box-shadow .15s;
+  }
+  .ov-card:hover { border-color: #cbd5e1; box-shadow: 0 6px 16px rgba(0,0,0,.04); }
+  .ov-card.unbound { border-style: dashed; background: #fff; }
+  .ov-card-top { display: flex; align-items: center; gap: 10px; }
+  .ov-ico { width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .ov-ico.tunnel { background: rgba(79,70,229,.1); color: #4f46e5; }
+  .ov-ico.r2 { background: rgba(6,182,212,.1); color: #06b6d4; }
+  .ov-ico.emqx { background: rgba(16,185,129,.1); color: #059669; }
+  .ov-ico.db { background: rgba(139,92,246,.1); color: #8b5cf6; }
+  .ov-ico.sec { background: rgba(217,119,6,.12); color: #d97706; }
+  .ov-ico.cf { background: rgba(243,128,32,.12); color: #ea580c; }
+  .ov-name { font-weight: 600; font-size: 13.5px; flex: 1; }
+  .ov-value { font-size: 13.5px; font-weight: 600; word-break: break-all; }
+  .ov-value.muted { color: var(--text-3); font-weight: 500; }
+  .ov-sub { font-size: 11.5px; color: var(--text-3); word-break: break-all; }
+  .ov-foot { margin-top: auto; padding-top: 4px; }
+
+  /* ============ 对外服务地址 ============ */
+  .addr-url { font-size: 22px; font-weight: 600; margin: 10px 0 2px; word-break: break-all; }
+  .addr-meta { color: var(--text-2); font-size: 13px; margin-top: 6px; }
+  .addr-meta b { color: var(--text); font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip { font-family: var(--mono); font-size: 12.5px; background: #f1f5f9; border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; color: var(--text); }
+  .chip.hl { background: var(--accent-bg); border-color: #a5e3f2; color: var(--accent); }
+  .addr-acts { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+  .mqtt-line { margin-top: 14px; padding: 10px 14px; border-radius: 8px; background: var(--accent-bg); border: 1px dashed #a5e3f2; font-size: 12.5px; color: var(--text-2); }
+  .mqtt-line b { color: var(--accent); }
+  .addr-empty { text-align: center; padding: 30px 16px; }
+  .addr-empty .big { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .addr-empty .sub { color: var(--text-3); font-size: 12.5px; margin-bottom: 18px; }
+  .addr-empty .acts { display: flex; gap: 10px; justify-content: center; }
+
+  /* 高级折叠 */
+  .adv-toggle { margin-bottom: 4px; }
+  .adv-body { display: none; flex-direction: column; gap: 16px; margin-top: 16px; }
+  .adv-body.show { display: flex; }
+
+  /* ============ 域名 / 预览列表 ============ */
+  .zone-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .zone-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; background: #fbfcfe; }
+  .zone-card .name-row { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .zone-card .zid { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); word-break: break-all; }
+  .zone-card .bound-note { font-size: 12px; color: var(--ok); }
+  .zone-card .act { margin-top: 4px; }
+
+
+  /* ============ 表格 ============ */
+  .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .table th, .table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .table th { color: var(--text-2); font-weight: 500; font-size: 12px; }
+  .table tr:last-child td { border-bottom: 0; }
+
+  /* ============ 弹窗 ============ */
+  .overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); display: none; align-items: flex-start; justify-content: center; padding: 8vh 16px 16px; z-index: 100; overflow: auto; }
+  .overlay.show { display: flex; }
+  .modal { background: #fff; border-radius: 14px; width: 520px; max-width: 100%; box-shadow: 0 20px 50px rgba(2, 8, 20, .25); overflow: hidden; }
+  .modal .m-head { padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 15px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .modal .m-head .x { border: 0; background: none; font-size: 18px; color: var(--text-3); cursor: pointer; }
+  .modal .m-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .modal .m-foot { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 10px; }
+  .host-preview { display: flex; align-items: center; gap: 8px; }
+  .host-preview .suffix { font-family: var(--mono); color: var(--text-2); font-size: 13px; white-space: nowrap; }
+  .host-preview .input { flex: 1; }
+  .checkbox-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+  .checkbox-row input { margin-top: 2px; accent-color: var(--accent); }
+  .checkbox-row .hint { display: block; color: var(--text-3); font-size: 11.5px; margin-top: 2px; }
+  .quick-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .quick-picks .chip { cursor: pointer; }
+  .quick-picks .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  .steps { display: none; flex-direction: column; gap: 8px; padding: 12px 14px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; }
+  .steps.show { display: flex; }
+  .step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+  .step .mark { font-weight: 700; }
+  .step.ok .mark { color: var(--ok); }
+  .step.err .mark { color: var(--danger); }
+  .step .name { font-weight: 600; white-space: nowrap; }
+  .step .detail { color: var(--text-2); word-break: break-all; }
+  .result-ok { display: none; padding: 10px 14px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); font-size: 12.5px; }
+  .result-ok.show { display: block; }
+  .result-err { display: none; padding: 10px 14px; border-radius: 10px; background: #fef2f2; color: var(--danger); font-size: 12.5px; }
+  .result-err.show { display: block; }
+  .cmd-box { display: none; margin-top: 2px; padding: 10px 12px; border-radius: 8px; background: #0f172a; color: #a5f3fc; font-family: var(--mono); font-size: 12px; word-break: break-all; position: relative; }
+  .cmd-box.show { display: block; }
+  .cmd-box .copy { position: absolute; right: 8px; top: 8px; border: 1px solid #334155; background: #1e293b; color: #cbd5e1; font-size: 11px; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+
+  #toast { position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%) translateY(20px); background: #111827; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 8px; opacity: 0; pointer-events: none; transition: all .25s; z-index: 200; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .note { font-size: 12px; color: var(--text-3); line-height: 1.6; }
+  .note-box { background: #fffbeb; border: 1px dashed #f4c68a; color: #92400e; border-radius: 10px; padding: 12px 16px; font-size: 12.5px; line-height: 1.75; }
+  .note-box b { color: #b45309; }
+  .note-box ol { margin: 6px 0 0 18px; padding: 0; }
+  .note-box li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+<!-- 原型工具条：走查两种网络态与地址绑定态 -->
+<div class="demo-toolbar">
+  <b>功能重排原型</b>
+  <span>访问来源：</span>
+  <span class="seg">
+    <button id="net-in" class="on" onclick="setNet(true)">Tailscale 内网</button>
+    <button id="net-pub" onclick="setNet(false)">公网 / 隧道</button>
+  </span>
+  <span>对外地址：</span>
+  <span class="seg">
+    <button id="st-bound" class="on" onclick="setState(true)">已绑定</button>
+    <button id="st-empty" onclick="setState(false)">未绑定</button>
+  </span>
+  <span style="margin-left:auto; color:#64748b;">仅供功能与信息架构走查 · 配色后补</span>
+</div>
+
+<div class="page">
+  <div id="settings-body">
+    <!-- 页头 -->
+    <div class="page-head">
+      <div>
+        <h1>系统设置</h1>
+        <div class="sub">凭据、隧道域名与资源绑定集中管理 · 每张卡片独立保存</div>
+      </div>
+      <div class="acts">
+        <span class="dirty-dot"><span class="dot"></span>有未保存改动</span>
+        <button class="btn" onclick="toast('原型：重新读取配置')">重新读取</button>
+        <button class="btn warn" onclick="toast('原型：保存全部配置并重启服务（约 5 秒）')">保存全部并重启服务</button>
+      </div>
+    </div>
+
+    <!-- 页签 -->
+    <div class="tabs" id="tabs">
+      <button class="on" onclick="switchTab('overview', this)">总览</button>
+      <button onclick="switchTab('access', this)">隧道与域名</button>
+      <button onclick="switchTab('r2', this)">存储 R2</button>
+      <button onclick="switchTab('emqx', this)">消息 EMQX</button>
+      <button onclick="switchTab('db', this)">数据库</button>
+      <button onclick="switchTab('security', this)">登录与安全</button>
+    </div>
+
+    <!-- ==================== 总览 ==================== -->
+    <div class="panel show" id="panel-overview">
+      <div class="note-box">
+        <b>本版针对「功能问题」的改动（请对照审核）：</b>
+        <ol>
+          <li><b>保存语义</b>：每张卡片独立「保存」；需重启才生效的模块在卡片上明确标注；顶部只保留一个「保存全部并重启服务」；测试按钮注明「测当前输入值」。</li>
+          <li><b>对外域名单一入口</b>：5 处入口收拢为「隧道与域名 → 对外服务地址」一张卡，移除错误的 trycloudflare 默认值。</li>
+          <li><b>公网权限态</b>：整页改为一道明确的「访问门」——公网访问直接挡在门外，不再出现空白表单。请用上方工具条切到「公网 / 隧道」查看。</li>
+          <li><b>资源默认可见</b>：进入页面自动同步 Cloudflare 资源，不再需要手动点同步。</li>
+          <li><b>消除重复字段</b>：删除重复的「手动配置绑定」弹窗，R2 / D1 只在各自页出现一次。</li>
+          <li><b>按功能校验</b>：对外地址拒绝内网/环回；子域名做占用预检（穿透弹窗里试试输入 web）。</li>
+          <li><b>总览诚实化</b>：明确这是「配置状态」而非实时健康；配置不完整的模块显示「部分配置」。</li>
+          <li><b>取消自动绑定</b>：移除「一键智能绑定」，所有资源改为逐项手动绑定，仅保留只读的自动发现。</li>
+        </ol>
+      </div>
+
+      <div class="ov-summary">
+        <span class="badge accent"><span class="dot"></span>配置状态</span>
+        <span>共 6 个模块：<b>5 项已配置</b> · 1 项部分配置 · 0 项未配置</span>
+        <span class="note" style="margin-left:auto;">本页为配置状态，非实时探活；实际连通性请在对应页点「测试」验证。</span>
+      </div>
+
+      <!-- 绑定方式说明：取消自动绑定，改为手动逐项 -->
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>绑定方式：手动 · 逐项确认</h2>
+            <div class="desc">系统不提供「一键自动绑定」，所有写入都由你手动选择并确认，避免自动绑错资源。</div>
+          </div>
+        </div>
+        <div class="note">
+          资源只做<b>只读自动发现</b>（列出账户里有什么），不会自动写入任何配置。
+          绑定入口：隧道 →「隧道与域名」页手动添加主机名；存储桶 →「存储 R2」页逐个绑定；D1 →「数据库」页逐个绑定。
+        </div>
+      </div>
+
+      <div class="ov-grid">
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico tunnel">◧</span>
+            <span class="ov-name">隧道与域名</span>
+            <span class="badge ok"><span class="dot"></span>已配置</span>
+          </div>
+          <div class="ov-value mono">https://adb.aaaaaa.com</div>
+          <div class="ov-sub">承载隧道 adbcontrol · healthy · 2 连接</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('access')">管理 →</button></div>
+        </div>
+
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico r2">◫</span>
+            <span class="ov-name">存储 R2</span>
+            <span class="badge warn"><span class="dot"></span>部分配置</span>
+          </div>
+          <div class="ov-value">slss-boby</div>
+          <div class="ov-sub">缺少 Access Key / Secret，上传会失败</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('r2')">去补齐 →</button></div>
+        </div>
+
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico emqx">◈</span>
+            <span class="ov-name">消息 EMQX</span>
+            <span class="badge ok"><span class="dot"></span>已配置</span>
+          </div>
+          <div class="ov-value mono">o8cc…emqxsl.cn:8883</div>
+          <div class="ov-sub">REST API 已填 · Ingestor 已配置</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('emqx')">管理 →</button></div>
+        </div>
+
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico db">◍</span>
+            <span class="ov-name">数据库</span>
+            <span class="badge ok"><span class="dot"></span>已配置</span>
+          </div>
+          <div class="ov-value">MariaDB · adbcontrol</div>
+          <div class="ov-sub mono">127.0.0.1:3306</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('db')">管理 →</button></div>
+        </div>
+
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico sec">✦</span>
+            <span class="ov-name">登录与安全</span>
+            <span class="badge ok"><span class="dot"></span>已配置</span>
+          </div>
+          <div class="ov-value">Cloudflare Access OIDC</div>
+          <div class="ov-sub">单点登录已启用</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('security')">管理 →</button></div>
+        </div>
+
+        <div class="ov-card">
+          <div class="ov-card-top">
+            <span class="ov-ico cf">☁</span>
+            <span class="ov-name">Cloudflare 接入</span>
+            <span class="badge ok"><span class="dot"></span>Token 有效</span>
+          </div>
+          <div class="ov-value">2 个域名 · 1 条隧道</div>
+          <div class="ov-sub">已于进入页面时自动同步</div>
+          <div class="ov-foot"><button class="btn link" onclick="switchTab('access')">管理 →</button></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 隧道与域名 ==================== -->
+    <div class="panel" id="panel-access">
+      <!-- 核心：对外服务地址（唯一入口） -->
+      <div class="card" id="addr-card-bound">
+        <div class="sec-head">
+          <div>
+            <h2>对外服务地址</h2>
+            <div class="desc">被控端配对与 Web 公网访问均经由该地址。修改对外域名的唯一入口就是这里。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge ok"><span class="dot"></span>已生效</span>
+            <span class="badge accent"><span class="dot"></span>即时生效</span>
+          </div>
+        </div>
+
+        <div class="addr-url mono">https://adb.aaaaaa.com</div>
+        <div class="addr-meta">承载隧道：<b>adbcontrol</b>（healthy · 2 连接） · 所属域名：<b>aaaaaa.com</b></div>
+
+        <div class="mqtt-line">
+          <b>MQTT over WSS 双栈通道：已开启</b>（/mqtt → EMQX :8084）。受控端将在「直连 8883（IPv4）」与本地址 WSS（双栈）间自动探测优选。
+        </div>
+
+        <div class="addr-acts">
+          <button class="btn primary" onclick="openModal('modal-url')">更换地址</button>
+          <button class="btn" onclick="openProvision()">添加主机名</button>
+          <button class="btn subtle" onclick="openProvision(null, true)">换用新隧道…</button>
+        </div>
+        <div class="note" style="margin-top:10px;">
+          已绑定主机名（来自本隧道 DNS 记录，需后端补充 hostnames 字段）：adb.aaaaaa.com（当前）· status.aaaaaa.com
+        </div>
+      </div>
+
+      <div class="card" id="addr-card-empty" style="display:none;">
+        <div class="addr-empty">
+          <div class="big">尚未绑定对外服务地址</div>
+          <div class="sub">绑定到某个托管域名的子域名后，系统会自动创建 / 选用隧道、配置入口并生成 DNS 记录。</div>
+          <div class="acts">
+            <button class="btn primary" onclick="openProvision()">绑定到托管域名</button>
+            <button class="btn" onclick="openModal('modal-url')">手动填写地址</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 托管域名 -->
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>托管域名 Zones · 2</h2>
+            <div class="desc">已自动同步。选择域名把子域名通过隧道穿透到本服务。</div>
+          </div>
+          <span class="badge gray">最近同步：刚刚</span>
+        </div>
+        <div class="zone-grid">
+          <div class="zone-card">
+            <div class="name-row">aaaaaa.com <span class="tag green">active</span></div>
+            <div class="zid">Zone ID: 0123abcd…8ef</div>
+            <div class="bound-note">✓ 当前对外地址承载于此域名</div>
+            <div class="act"><button class="btn" onclick="openProvision('aaaaaa.com')">隧道穿透绑定</button></div>
+          </div>
+          <div class="zone-card">
+            <div class="name-row">example-hh.cn <span class="tag green">active</span></div>
+            <div class="zid">Zone ID: 9f8e7d6c…21</div>
+            <div class="act"><button class="btn" onclick="openProvision('example-hh.cn')">隧道穿透绑定</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 高级（折叠，降低页面重量） -->
+      <button class="btn subtle adv-toggle" id="access-adv-btn" onclick="toggleAdv('access-adv', this)">▸ 高级：Cloudflare 接入凭证与隧道列表</button>
+      <div class="adv-body" id="access-adv">
+        <div class="card">
+          <div class="sec-head">
+            <div>
+              <h2>Cloudflare 接入凭证</h2>
+              <div class="desc">隧道创建、域名解析，以及 R2 / D1 资源的只读发现都复用此 Token（发现不会写入配置）。</div>
+            </div>
+            <div class="sec-status">
+              <span class="badge ok"><span class="dot"></span>已保存</span>
+              <span class="badge accent"><span class="dot"></span>即时生效</span>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field col-span-2">
+              <label>API Token</label>
+              <input class="input" type="password" value="••••••••••••••••••••••••">
+              <span class="hint">所需权限：帐户设置 Read · 区域 Read · 隧道 Edit · DNS Edit（自动发现 R2 / D1 另需对应 Read 权限）。</span>
+            </div>
+          </div>
+          <div class="row-acts">
+            <button class="btn primary" onclick="toast('原型：保存并校验 Token')">保存并校验</button>
+            <button class="btn" onclick="toast('原型：重新同步 Cloudflare 资源')">重新同步资源</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="sec-head">
+            <div>
+              <h2>Cloudflare 隧道</h2>
+              <div class="desc">可在此新建隧道（仅建隧道，不含入口规则）；切换对外地址仍用上方「对外服务地址」卡片。</div>
+            </div>
+            <button class="btn" onclick="openModal('modal-createtunnel')">＋ 新建隧道</button>
+          </div>
+          <table class="table">
+            <thead><tr><th>隧道名称</th><th>状态</th><th>连接数</th><th>Tunnel UUID</th><th></th></tr></thead>
+            <tbody>
+              <tr><td><b>adbcontrol</b></td><td><span class="tag green">HEALTHY</span></td><td>2</td><td class="mono" style="font-size:11.5px;color:var(--text-3);">6f2a1c0e…d94</td><td style="text-align:right;"><span class="tag accent">当前承载地址</span></td></tr>
+              <tr><td><b>adbcontrol-v2</b></td><td><span class="tag gray">DEGRADED</span></td><td>0</td><td class="mono" style="font-size:11.5px;color:var(--text-3);">ab77e310…0f1</td><td style="text-align:right;"><span class="badge gray">备用</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 存储 R2 ==================== -->
+    <div class="panel" id="panel-r2">
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>R2 对象存储</h2>
+            <div class="desc">持久化设备采集的截图、日志、录屏以及 OTA 安装包。凭据仅在此页配置一次。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge warn"><span class="dot"></span>有未保存改动</span>
+            <span class="badge gray">改动需重启生效</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field col-span-2">
+            <label>R2 S3 API Endpoint</label>
+            <input class="input" value="https://xxxx.r2.cloudflarestorage.com">
+          </div>
+          <div class="field">
+            <label>存储桶名称 (Bucket)</label>
+            <input class="input" value="slss-boby">
+          </div>
+          <div class="field">
+            <label>R2 Access Key ID</label>
+            <input class="input" placeholder="尚未填写">
+          </div>
+          <div class="field col-span-2">
+            <label>R2 Secret Access Key</label>
+            <input class="input" type="password" placeholder="尚未填写">
+            <span class="hint">若不修改请保持原样掩码。上传截图依赖此密钥，未填写则上传会失败。</span>
+          </div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存 R2 配置（重启后生效）')">保存</button>
+          <button class="btn" onclick="toast('原型：测试使用当前输入值，通过后仍需点保存')">测试连通性</button>
+          <span class="note">测试使用当前输入值；通过后仍需点「保存」。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>Cloudflare 存储桶发现</h2>
+            <div class="desc">只读发现（已自动同步）。此处复用「隧道与域名 → 高级」里的 API Token 读取桶列表；R2 的 S3 密钥用于后端上传，两者不同。</div>
+          </div>
+          <button class="btn subtle" onclick="toast('原型：重新读取存储桶')">重新读取</button>
+        </div>
+        <div class="zone-grid">
+          <div class="zone-card">
+            <div class="name-row">slss-boby <span class="tag gray">当前绑定桶</span></div>
+            <div class="zid">Endpoint: https://xxxx.r2.cloudflarestorage.com</div>
+          </div>
+          <div class="zone-card">
+            <div class="name-row">adbcontrol-storage <span class="tag gray">未绑定</span></div>
+            <div class="zid">Endpoint: https://xxxx.r2.cloudflarestorage.com</div>
+            <div class="act"><button class="btn" onclick="toast('原型：绑定此存储桶（回填 Endpoint/Bucket）')">绑定此存储桶</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 消息 EMQX ==================== -->
+    <div class="panel" id="panel-emqx">
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>EMQX MQTT Broker</h2>
+            <div class="desc">与受控手机建立长连接、下发远程指令并收集遥测数据。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge ok"><span class="dot"></span>已保存</span>
+            <span class="badge gray">改动需重启生效</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>EMQX Broker Host</label><input class="input" value="o8cc1111.ala.cn-hangzhou.emqxsl.cn"></div>
+          <div class="field"><label>MQTT TLS 端口</label><input class="input" value="8883"></div>
+          <div class="field"><label>EMQX App ID</label><input class="input" value="adbcontrol-api"></div>
+          <div class="field"><label>EMQX REST API 端点</label><input class="input" value="https://o8cc1111.emqxsl.cn:8443"></div>
+          <div class="field col-span-2"><label>EMQX App Secret（REST API 密钥）</label><input class="input" type="password" value="••••••••••••••••"></div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存 EMQX 配置（重启后生效）')">保存</button>
+          <button class="btn" onclick="toast('原型：测试 REST 连通性（用当前输入值）')">测试连通性</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>遥测持久化 Ingestor 账号 <span class="tag gray">可选</span></h2>
+            <div class="desc">用于把遥测数据从 EMQX 规则引擎写入后端，未配置则使用默认账号。</div>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>Ingestor 用户名</label><input class="input" value="ingestor"></div>
+          <div class="field"><label>Ingestor 密码</label><input class="input" type="password" value="••••••••••"></div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存 Ingestor 账号（重启后生效）')">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 数据库 ==================== -->
+    <div class="panel" id="panel-db">
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>MariaDB 数据库 <span class="tag accent">主库</span></h2>
+            <div class="desc">系统当前使用的唯一数据库，台账 / 任务 / 遥测均落在此库。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge ok"><span class="dot"></span>已保存</span>
+            <span class="badge gray">改动需重启生效</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field"><label>数据库地址 (Host)</label><input class="input" value="127.0.0.1"></div>
+          <div class="field"><label>端口 (Port)</label><input class="input" value="3306"></div>
+          <div class="field"><label>数据库名 (Database Name)</label><input class="input" value="adbcontrol"></div>
+          <div class="field"><label>数据库用户 (Username)</label><input class="input" value="root"></div>
+          <div class="field col-span-2"><label>数据库密码 (Password)</label><input class="input" type="password" value="••••••••••••••••"></div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存数据库配置（重启后生效）')">保存</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>Cloudflare D1 数据库 <span class="tag gray">备用 · 当前未启用</span></h2>
+            <div class="desc">托管型备用持久化，非必需。下方为同步发现的库，选择其一显式绑定；不会自动写入。</div>
+          </div>
+          <span class="badge gray"><span class="dot"></span>未绑定</span>
+        </div>
+        <div class="zone-grid">
+          <div class="zone-card">
+            <div class="name-row">adbcontrol_d1 <span class="tag gray">未绑定</span></div>
+            <div class="zid">UUID: 8f3c1a…0b2</div>
+            <div class="act"><button class="btn" onclick="toast('原型：绑定 D1 库 adbcontrol_d1')">绑定此库</button></div>
+          </div>
+          <div class="zone-card">
+            <div class="name-row">legacy-logs <span class="tag gray">未绑定</span></div>
+            <div class="zid">UUID: 2b7e9d…a41</div>
+            <div class="act"><button class="btn" onclick="toast('原型：绑定 D1 库 legacy-logs')">绑定此库</button></div>
+          </div>
+        </div>
+        <div class="form-grid" style="margin-top:16px;">
+          <div class="field"><label>数据库名称</label><input class="input" placeholder="例如 adbcontrol_d1"></div>
+          <div class="field"><label>数据库 UUID</label><input class="input" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></div>
+        </div>
+        <div class="row-acts">
+          <button class="btn" onclick="toast('原型：按填写内容手动绑定 D1')">手动填写并绑定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 登录与安全 ==================== -->
+    <div class="panel" id="panel-security">
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>登录方式：Cloudflare Access OIDC 单点登录</h2>
+            <div class="desc">配置后可在登录页点击「拉起 Cloudflare 官方账号登录」一键认证。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge ok"><span class="dot"></span>已配置</span>
+            <span class="badge accent"><span class="dot"></span>即时生效</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Cloudflare 团队域名 (Team Domain)</label>
+            <div class="input-wrap">
+              <input class="input" value="my-team.cloudflareaccess.com">
+              <button class="btn" onclick="toast('原型：填入探测到的团队域名')">填入探测值</button>
+            </div>
+          </div>
+          <div class="field"><label>OIDC Client ID</label><input class="input" value="a1b2c3d4…"></div>
+          <div class="field"><label>OIDC Client Secret</label><input class="input" type="password" value="••••••••••••••••"></div>
+          <div class="field">
+            <label>授权回调地址 (Redirect URI)</label>
+            <div class="input-wrap">
+              <input class="input" value="https://adb.aaaaaa.com/api/auth/cf-oidc/callback">
+              <button class="btn" onclick="toast('原型：已复制')">复制</button>
+            </div>
+            <span class="hint">需填入 Cloudflare Zero Trust SaaS 应用的 Redirect URL 列表。</span>
+          </div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存 OIDC 配置（走独立接口，即时生效）')">保存</button>
+          <button class="btn" onclick="toast('原型：测试拉起登录')">测试拉起登录</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>访问控制</h2>
+            <div class="desc">本页所有设置接口仅在 Tailscale 内网 / 本机可用，公网访问会被服务端阻断。</div>
+          </div>
+          <span class="badge ok"><span class="dot"></span>已启用</span>
+        </div>
+        <div class="note">当前访问来源：<code>100.91.103.13</code>（Tailscale）。切换公网后将无法读取或修改本页任何配置。</div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head">
+          <div>
+            <h2>自动化发布令牌（CI/CD）</h2>
+            <div class="desc">供 GitHub Actions 触发 OTA 更新通知等自动化流程使用，与上方登录方式无关。</div>
+          </div>
+          <div class="sec-status">
+            <span class="badge ok"><span class="dot"></span>已保存</span>
+            <span class="badge gray">改动需重启生效</span>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="field col-span-2"><label>OTA 发布令牌 (PM Token)</label><input class="input" type="password" value="••••••••••••••••"></div>
+        </div>
+        <div class="row-acts">
+          <button class="btn primary" onclick="toast('原型：保存发布令牌（重启后生效）')">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 公网访问门（替代空白表单） -->
+  <div class="card gate" id="access-gate" style="display:none;">
+    <div class="g-ico">🔒</div>
+    <h2>此页仅限内网 / Tailscale 访问</h2>
+    <p>检测到当前来源为公网（客户端 IP：<code>203.0.113.7</code>）。为防止敏感凭据在公网暴露，系统设置接口已在服务端硬性阻断。</p>
+    <p>请改用 Tailscale 内网地址访问，例如 <code>http://100.91.103.13:8080</code>，或在本机直接打开。</p>
+    <div class="row-acts">
+      <button class="btn primary" onclick="toast('原型：重新检测访问来源')">重新检测</button>
+      <button class="btn" onclick="toast('原型：查看如何加入 Tailscale')">如何加入 Tailscale？</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 弹窗 1：隧道穿透绑定（添加主机名 / 首次绑定 / 换用新隧道 共用） ========== -->
+<div class="overlay" id="modal-provision">
+  <div class="modal">
+    <div class="m-head">隧道穿透绑定域名 <button class="x" onclick="closeModal('modal-provision')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>目标域名 (Zone)</label>
+        <select class="input" id="pv-zone" onchange="pvCheckSub()">
+          <option>aaaaaa.com</option>
+          <option>example-hh.cn</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>子域名前缀</label>
+        <div class="host-preview">
+          <input class="input" id="pv-sub" value="monitor" oninput="pvCheckSub()">
+          <span class="suffix" id="pv-suffix">.aaaaaa.com</span>
+        </div>
+        <span class="sub-check" id="pv-subcheck"></span>
+        <span class="hint">提交前会先做占用预检；试试输入 <code>web</code> 看提示。</span>
+      </div>
+      <div class="field">
+        <label>隧道</label>
+        <select class="input" id="pv-tunnel" onchange="pvSyncSuffix()">
+          <option>当前隧道：adbcontrol（healthy · 保留已有主机名）</option>
+          <option>➕ 新建隧道…</option>
+        </select>
+      </div>
+      <div class="field" id="pv-newname-wrap" style="display:none;">
+        <label>新隧道名称</label>
+        <input class="input" id="pv-newname" value="adbcontrol-v2">
+      </div>
+      <div class="field">
+        <label>后端本地端口</label>
+        <input class="input" id="pv-port" value="8080" style="width:140px;">
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="pv-wss" checked>
+        <span>同时开启 MQTT over WSS 双栈通道
+          <span class="hint">自动追加入口规则 /mqtt → EMQX :8084，受控端可在 IPv4 直连与本双栈通道间自动优选。</span>
+        </span>
+      </label>
+
+      <div class="result-err" id="pv-err"></div>
+      <div class="steps" id="pv-steps"></div>
+      <div class="result-ok" id="pv-ok"></div>
+      <div class="cmd-box" id="pv-cmd">cloudflared service install eyJhIjoiMG12...(隧道连接器 Token)<button class="copy" onclick="copyText(this)">复制</button></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-provision')">关闭</button>
+      <button class="btn primary" id="pv-run" onclick="runProvision()">开始穿透绑定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 弹窗 2：更换对外地址 ========== -->
+<div class="overlay" id="modal-url">
+  <div class="modal">
+    <div class="m-head">更换对外服务地址 <button class="x" onclick="closeModal('modal-url')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>当前地址</label>
+        <input class="input" value="https://adb.aaaaaa.com" disabled>
+      </div>
+      <div class="field">
+        <label>新地址（需以 https:// 开头，不允许内网 / 环回 / 保留地址）</label>
+        <input class="input" id="url-input" placeholder="https://" oninput="checkUrl()">
+        <span class="sub-check" id="url-check"></span>
+        <div class="note" style="margin-top:6px;">对外地址用于手机扫码配对，填内网地址手机将无法连接。</div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-url')">取消</button>
+      <button class="btn primary" onclick="saveUrl()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 弹窗 3：新建隧道 ========== -->
+<div class="overlay" id="modal-createtunnel">
+  <div class="modal">
+    <div class="m-head">新建隧道 <button class="x" onclick="closeModal('modal-createtunnel')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>隧道名称</label>
+        <input class="input" value="adbcontrol-v3">
+        <div class="note" style="margin-top:8px;">
+          在 Cloudflare 账户下新建一条远程托管隧道（不含任何入口规则）。
+          创建后可回到上方「添加主机名」，把域名穿透绑定到这条新隧道。
+        </div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-createtunnel')">取消</button>
+      <button class="btn primary" onclick="createTunnel()">创建</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, 2000);
+  }
+
+  /* ---------- 网络态：内网 / 公网访问门 ---------- */
+  function setNet(internal) {
+    $('settings-body').style.display = internal ? '' : 'none';
+    $('access-gate').style.display = internal ? 'none' : '';
+    $('net-in').classList.toggle('on', internal);
+    $('net-pub').classList.toggle('on', !internal);
+    window.scrollTo({ top: 0 });
+  }
+
+  /* ---------- 页签 ---------- */
+  function switchTab(name, btn) {
+    var panels = document.querySelectorAll('.panel');
+    for (var i = 0; i < panels.length; i++) panels[i].classList.remove('show');
+    $('panel-' + name).classList.add('show');
+    var btns = document.querySelectorAll('#tabs button');
+    for (var j = 0; j < btns.length; j++) btns[j].classList.remove('on');
+    if (btn) btn.classList.add('on');
+    else {
+      for (var k = 0; k < btns.length; k++) {
+        if (btns[k].getAttribute('onclick').indexOf("'" + name + "'") > -1) btns[k].classList.add('on');
+      }
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /* ---------- 已绑定 / 未绑定 ---------- */
+  function setState(bound) {
+    $('addr-card-bound').style.display = bound ? '' : 'none';
+    $('addr-card-empty').style.display = bound ? 'none' : '';
+    $('st-bound').classList.toggle('on', bound);
+    $('st-empty').classList.toggle('on', !bound);
+  }
+
+  /* ---------- 高级折叠 ---------- */
+  function toggleAdv(id, btn) {
+    var el = $(id);
+    var show = !el.classList.contains('show');
+    el.classList.toggle('show', show);
+    btn.textContent = (show ? '▾ ' : '▸ ') + btn.textContent.replace(/^[▸▾] /, '');
+  }
+
+  /* ---------- 弹窗 ---------- */
+  function openModal(id) {
+    if (id === 'modal-url' && !$('url-input').value) { $('url-input').value = 'https://'; checkUrl(); }
+    var ids = ['modal-url', 'modal-createtunnel'];
+    for (var i = 0; i < ids.length; i++) $(ids[i]).classList.toggle('show', ids[i] === id);
+  }
+  function closeModal(id) { $(id).classList.remove('show'); }
+
+  /* ---------- 穿透绑定 ---------- */
+  function openProvision(zone, asNewTunnel) {
+    if (zone) {
+      var sel = $('pv-zone');
+      for (var i = 0; i < sel.options.length; i++) if (sel.options[i].text === zone) sel.selectedIndex = i;
+    }
+    if (asNewTunnel) $('pv-tunnel').selectedIndex = 1;
+    $('pv-steps').classList.remove('show');
+    $('pv-ok').classList.remove('show');
+    $('pv-err').classList.remove('show');
+    $('pv-cmd').classList.remove('show');
+    $('pv-steps').innerHTML = '';
+    $('modal-provision').classList.add('show');
+    pvSyncSuffix();
+  }
+  function pvSyncSuffix() {
+    $('pv-suffix').textContent = '.' + $('pv-zone').value;
+    $('pv-newname-wrap').style.display = $('pv-tunnel').selectedIndex === 1 ? '' : 'none';
+    pvCheckSub();
+  }
+  var TAKEN = ['adb', 'status', 'web'];
+  function pvCheckSub() {
+    var sub = ($('pv-sub').value || '').trim().toLowerCase();
+    var el = $('pv-subcheck');
+    if (!sub) { el.textContent = ''; el.className = 'sub-check'; return; }
+    if (TAKEN.indexOf(sub) > -1) {
+      el.textContent = '✗ ' + sub + '.' + $('pv-zone').value + ' 已被占用，请换一个前缀';
+      el.className = 'sub-check bad';
+    } else {
+      el.textContent = '✓ ' + sub + '.' + $('pv-zone').value + ' 可用';
+      el.className = 'sub-check good';
+    }
+  }
+  function runProvision() {
+    var sub = $('pv-sub').value.trim().toLowerCase();
+    if (!sub) { toast('请输入子域名前缀'); return; }
+    if (TAKEN.indexOf(sub) > -1) { toast('该子域名已被占用，请先更换'); return; }
+    var host = sub + '.' + $('pv-zone').value;
+    var isNew = $('pv-tunnel').selectedIndex === 1;
+    var wss = $('pv-wss').checked;
+    var steps = [
+      isNew ? ['创建隧道 ' + $('pv-newname').value, '远程托管配置模式'] : ['选用当前隧道 adbcontrol', '保留已有主机名'],
+      ['校验主机名占用', host + ' 可用'],
+      ['配置入口 (ingress)', '追加 ' + host + ' → http://localhost:' + $('pv-port').value + (isNew ? '' : '（合并，不覆盖）')],
+      ['绑定 DNS 路由', '已创建 ' + host + ' 的隧道 CNAME（自动双栈 A/AAAA）']
+    ];
+    if (wss) steps.push(['开启 MQTT over WSS 通道', '/mqtt → EMQX :8084']);
+    var box = $('pv-steps'); box.innerHTML = ''; box.classList.add('show');
+    $('pv-err').classList.remove('show'); $('pv-ok').classList.remove('show'); $('pv-cmd').classList.remove('show');
+    $('pv-run').disabled = true;
+    var i = 0;
+    (function next() {
+      if (i < steps.length) {
+        var d = document.createElement('div');
+        d.className = 'step ok';
+        d.innerHTML = '<span class="mark">✓</span><span class="name">' + steps[i][0] + '</span><span class="detail">' + steps[i][1] + '</span>';
+        box.appendChild(d); i++; setTimeout(next, 500);
+      } else {
+        $('pv-ok').textContent = '穿透绑定成功：https://' + host + ' 已指向本地端口 ' + $('pv-port').value;
+        $('pv-ok').classList.add('show');
+        $('pv-cmd').classList.add('show');
+        $('pv-run').disabled = false;
+        toast('演示完成：真实实现将自动刷新对外地址');
+      }
+    })();
+  }
+
+  /* ---------- 更换地址 ---------- */
+  function checkUrl() {
+    var v = ($('url-input').value || '').trim();
+    var el = $('url-check');
+    if (!v || v === 'https://' || v === 'http://') { el.textContent = ''; el.className = 'sub-check'; return; }
+    if (!/^https?:\/\/.+/.test(v)) { el.textContent = '✗ 必须以 http:// 或 https:// 开头'; el.className = 'sub-check bad'; return; }
+    var host = v.replace(/^https?:\/\//, '').split('/')[0];
+    if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host)) {
+      el.textContent = '✗ 不允许内网 / 环回 / 保留地址（手机无法连接）'; el.className = 'sub-check bad'; return;
+    }
+    el.textContent = '✓ 地址可用'; el.className = 'sub-check good';
+  }
+  function saveUrl() {
+    var v = $('url-input').value.trim();
+    if (!/^https?:\/\/.+/.test(v)) { toast('地址必须以 http:// 或 https:// 开头'); return; }
+    var host = v.replace(/^https?:\/\//, '').split('/')[0];
+    if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host)) {
+      toast('不允许内网 / 环回 / 保留地址'); return;
+    }
+    closeModal('modal-url');
+    toast('已保存对外地址：' + v);
+  }
+
+  /* ---------- 新建隧道 ---------- */
+  function createTunnel() {
+    closeModal('modal-createtunnel');
+    toast('原型：已创建隧道，可再到「添加主机名」把它绑定到域名');
+  }
+
+  function copyText(btn) {
+    var text = btn.parentElement.textContent.replace('复制', '').trim();
+    try { navigator.clipboard.writeText(text); } catch (e) {}
+    toast('已复制到剪贴板');
+  }
+
+  pvCheckSub();
+</script>
+</body>
+</html>
