@@ -1,1 +1,0 @@
-import{r as a}from"./index-qAjtRqY5.js";const o=(e=!1)=>a.get("/api/pairing-tokens",{params:{includeUsed:e?1:0}}).then(t=>{var s;return((s=t.data)==null?void 0:s.items)||[]}),i=(e={})=>a.post("/api/pairing-tokens",e).then(t=>t.data),r=e=>a.delete(`/api/pairing-tokens/${e}`).then(t=>t.data);export{i as c,o as l,r};
