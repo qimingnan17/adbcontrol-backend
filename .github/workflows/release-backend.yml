@@ -31,6 +31,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Checkout web frontend
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: 'qimingnan17/adbcontrol-web'
+          path: 'web-frontend'
+
+      - name: Set up Node.js
+        continue-on-error: true
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build web frontend
+        continue-on-error: true
+        run: |
+          if [ -d "web-frontend" ]; then
+            cd web-frontend
+            npm install || true
+            npm run build || true
+            if [ -d "dist" ]; then
+              mkdir -p ../backend/src/main/resources/static
+              cp -r dist/* ../backend/src/main/resources/static/
+            fi
+          fi
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
