@@ -25,6 +25,8 @@ AdbControl 支持以下两种生产部署架构：
 | **Node.js** | 18.0 或更高版本 | 编译 Vue 3 Web 前端 |
 | **EMQX Cloud** | Host / Port / App ID / App Secret / REST Endpoint | MQTT 5.0 消息总线及动态凭据签发 |
 | **Cloudflare R2**| Endpoint / Bucket 名 / Access Key / Access Secret | 存放远程截图、设备运行日志 |
+| **Cloudflare API Token** | Cloudflare 控制台 → My Profile → API Tokens 创建，权限需覆盖 Zones / Tunnels / R2 / D1 / Access 读取 | Web 端「系统设置 → 隧道与域名」资源发现（只读）与 SSO Token 登录（可选） |
+| **Cloudflare Zero Trust** | 团队域名（`xxx.cloudflareaccess.com`）及 OIDC 应用 Client ID / Secret（Zero Trust → Access → Applications → SaaS 应用） | 「Cloudflare 官方账号登录」OIDC 单点登录（可选） |
 | **MySQL / MariaDB**| Host / Port / 数据库名 / 用户名 / 密码 | 持久化设备台账、任务规则、遥测与签收数据 |
 | **Tailscale** | 官方安装并登录同一 Tailnet 账号 | 零信任内网安全管理隧道 |
 | **SSH 密钥** | ed25519 或 RSA 密钥对 | 用于自动化部署流水线鉴权 |
@@ -188,3 +190,43 @@ powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1
      DELETE FROM admin_user;
      ```
    - 刷新 Web 页面即可重新进入首次初始化流程。
+
+---
+
+## 第 7 章 Cloudflare 集成：SSO 登录与云资源绑定
+
+> 设计细节见 [DESIGN.md 10.7](../DESIGN.md)。本章只讲部署侧操作。两种集成均为可选，不配置不影响账号密码登录。
+
+### 7.1 SSO 登录三种方式与选择
+
+| 方式 | 前置条件 | 操作入口 |
+| :--- | :--- | :--- |
+| **Access 头免密登录** | 站点整体置于 Cloudflare Tunnel + Zero Trust Access 策略之后 | 登录页自动探测到 Access 身份后一键登录 |
+| **API Token 登录** | 任一有效 Cloudflare API Token | 登录页输入 Token 即登录（Token 自动保存，供设置页资源发现复用） |
+| **OIDC 官方账号登录** | Zero Trust 控制台创建 SaaS OIDC 应用，拿到 Client ID / Secret | 登录页点击「Cloudflare 官方账号登录」跳转授权 |
+
+OIDC 方式需在「系统设置 → 登录与安全」保存团队域名（`cf.team_domain`）与 Client ID / Secret（`cf.oidc_client_id` / `cf.oidc_client_secret`）；回调地址默认 `<站点地址>/api/auth/cf-oidc/callback`，如站点对外地址与后端实际监听不一致，需一并填写自定义回调（`cf.oidc_redirect_uri`）并同步到 Zero Trust 应用配置。
+
+> **注意**：SSO 登录在管理员未初始化时会以登录身份自动创建初始管理员。若不希望任何人经 SSO 抢注管理员，请先完成账号密码初始化（第 6 章），或确保 Access 策略 / OIDC 应用已限定到可信邮箱。
+
+### 7.2 云资源绑定（推荐走 Web 界面，逐项手动）
+
+> 设置页重整后**不再提供一键自动绑定**：资源发现只读，所有写入都要人工逐项确认，避免自动绑错资源。
+
+1. 登录后进入「系统设置 → 隧道与域名 → 高级」，粘贴 Cloudflare API Token 并保存，系统自动（只读）同步账户下的域名、隧道、R2 桶与 D1 数据库；
+2. **对外域名**：在「隧道与域名 → 对外服务地址」用「更换地址 / 添加主机名 / 换用新隧道」；「添加主机名」走隧道穿透（建/选隧道 → 合并 ingress → 绑 DNS），可勾选同时开启 MQTT over WSS 双栈通道（追加 `/mqtt → EMQX:8084`）；
+3. **存储桶**：在「存储 R2」页逐桶点「绑定此存储桶」，再补齐 Access Key / Secret；
+4. **D1**：在「数据库」页逐库点「绑定此库」（或手动填写并绑定）；
+5. 绑定结果可在「总览」页各模块卡片查看（隧道 / R2 / D1 分别显示配置状态）。
+
+> 弱网提示：若经 Cloudflare 隧道 / 公网访问，首屏需下载前端 JS/CSS；后端已开启 gzip（首屏关键资源 ~1.66MB → ~466KB）。若仍超时，请优先用 Tailscale 内网地址访问。
+
+### 7.3 相关配置键速查
+
+| secrets.properties 键 | 写入途径 | 用途 |
+| :--- | :--- | :--- |
+| `cf.api_token` | Token 登录 / 设置页「隧道与域名 → 高级」保存 | Cloudflare API 调用凭据（供只读发现与隧道穿透使用） |
+| `cf.team_domain` | OIDC 配置保存 / 同步时自动补填 | OIDC 登录团队域名 |
+| `cf.oidc_client_id` / `cf.oidc_client_secret` | OIDC 配置保存 | OIDC 应用凭据 |
+| `cf.oidc_redirect_uri` | OIDC 配置保存 | 自定义回调地址（缺省 `<站点>/api/auth/cf-oidc/callback`） |
+| `d1.database_id` / `d1.database_name` / `d1.account_id` | D1 绑定 / 自动绑定；亦可用环境变量 `ADB_D1_DATABASE_ID` / `ADB_D1_DATABASE_NAME` / `ADB_D1_ACCOUNT_ID` | D1 数据库绑定标识 |
