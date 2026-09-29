@@ -309,7 +309,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
 
         db.updateAdminLastLogin(admin.id)
         call.sessions.set(UserSession(admin.id, admin.username, admin.role))
-        call.respondRedirect("$origin/?cf_sso=success")
+        call.respondRedirect("$origin/dashboard?cf_sso=success")
     }
 
     authenticate("auth-session") {

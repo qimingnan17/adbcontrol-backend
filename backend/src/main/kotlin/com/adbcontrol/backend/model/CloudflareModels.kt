@@ -37,7 +37,8 @@ data class CfD1Database(
     val uuid: String,
     val name: String,
     val version: String = "beta",
-    val createdAt: String = ""
+    val createdAt: String = "",
+    val accountId: String = ""
 )
 
 @Serializable
@@ -112,4 +113,52 @@ data class CfOidcUserInfo(
     val email: String,
     val name: String? = null,
     val sub: String? = null
+)
+
+@Serializable
+data class CfApplyD1Request(
+    val databaseId: String,
+    val databaseName: String,
+    val accountId: String? = null
+)
+
+@Serializable
+data class CfAutoBindRequest(
+    val apiToken: String? = null
+)
+
+@Serializable
+data class CfAutoBindResponse(
+    val ok: Boolean,
+    val boundTunnel: String? = null,
+    val boundR2: String? = null,
+    val boundD1: String? = null,
+    val message: String
+)
+
+@Serializable
+data class CfManualBindRequest(
+    val serverUrl: String? = null,
+    val r2Endpoint: String? = null,
+    val r2Bucket: String? = null,
+    val r2AccessKey: String? = null,
+    val r2AccessSecret: String? = null,
+    val d1DatabaseId: String? = null,
+    val d1DatabaseName: String? = null,
+    val d1AccountId: String? = null
+)
+
+@Serializable
+data class CfCloudBindingsResponse(
+    val serverUrl: String = "",
+    val isTunnelBound: Boolean = false,
+    val r2Endpoint: String = "",
+    val r2Bucket: String = "",
+    val isR2Bound: Boolean = false,
+    val d1DatabaseId: String = "",
+    val d1DatabaseName: String = "",
+    val d1AccountId: String = "",
+    val isD1Bound: Boolean = false,
+    val hasApiToken: Boolean = false,
+    val isAllBound: Boolean = false
 )

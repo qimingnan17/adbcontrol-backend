@@ -48,6 +48,10 @@ data class BackendConfig(
     val emqxIngestPassword: String = "",
     /** OTA 版本发布令牌(CI 经 X-Admin-Token 头调用 /api/updates/publish;未配置则发布通道关闭)。 */
     val pmToken: String = "",
+    /** Cloudflare D1 数据库绑定配置 */
+    val d1DatabaseId: String = "",
+    val d1DatabaseName: String = "",
+    val d1AccountId: String = "",
 ) {
     /** 由模板拼装单设备 Broker 凭证(用户名/密码在配对时签发)。 */
     fun buildBroker(username: String, password: String): BrokerConfig = BrokerConfig(
@@ -181,6 +185,9 @@ data class BackendConfig(
                 emqxIngestUsername = get("ADB_EMQX_INGEST_USERNAME", "emqx.ingest_username", ""),
                 emqxIngestPassword = get("ADB_EMQX_INGEST_PASSWORD", "emqx.ingest_password", ""),
                 pmToken = get("ADB_PM_TOKEN", "pm.token", ""),
+                d1DatabaseId = get("ADB_D1_DATABASE_ID", "d1.database_id", ""),
+                d1DatabaseName = get("ADB_D1_DATABASE_NAME", "d1.database_name", ""),
+                d1AccountId = get("ADB_D1_ACCOUNT_ID", "d1.account_id", ""),
             )
         }
 

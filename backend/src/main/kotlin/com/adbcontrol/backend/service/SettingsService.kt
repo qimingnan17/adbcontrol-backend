@@ -79,6 +79,9 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         val cfOidcClientId = props.getProperty("cf.oidc_client_id", "")
         val cfOidcClientSecret = props.getProperty("cf.oidc_client_secret", "")
         val cfOidcRedirectUri = props.getProperty("cf.oidc_redirect_uri", "")
+        val d1Id = props.getProperty("d1.database_id", config.d1DatabaseId)
+        val d1Name = props.getProperty("d1.database_name", config.d1DatabaseName)
+        val d1Acc = props.getProperty("d1.account_id", config.d1AccountId)
 
         return SecretsResponse(
             filePath = file.absolutePath,
@@ -122,6 +125,12 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
                 oidcClientSecret = maskSecret(cfOidcClientSecret),
                 hasOidcClientSecret = cfOidcClientSecret.isNotBlank(),
                 oidcRedirectUri = cfOidcRedirectUri
+            ),
+            d1 = D1Secrets(
+                databaseId = d1Id,
+                databaseName = d1Name,
+                accountId = d1Acc,
+                hasConfig = d1Id.isNotBlank()
             )
         )
     }
@@ -200,11 +209,56 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             appendLine("db.name = ${map["db.name"] ?: config.dbName}")
             appendLine("db.user = ${map["db.user"] ?: config.dbUser}")
             appendLine("db.password = ${map["db.password"] ?: ""}")
+            appendLine()
+            appendLine("# ---- Cloudflare D1 Database ----")
+            appendLine("d1.database_id = ${map["d1.database_id"] ?: config.d1DatabaseId}")
+            appendLine("d1.database_name = ${map["d1.database_name"] ?: config.d1DatabaseName}")
+            appendLine("d1.account_id = ${map["d1.account_id"] ?: config.d1AccountId}")
         }
 
         file.writeText(content, StandardCharsets.UTF_8)
         logger.info("Successfully updated {}", file.absolutePath)
         return true
+    }
+
+    /**
+     * 获取当前系统绑定的云端资产状态 (Server 域名/隧道、R2 存储桶、D1 数据库)。
+     */
+    fun getCloudBindings(): CfCloudBindingsResponse {
+        val file = getSecretsFile()
+        val props = Properties()
+        if (file.exists() && file.canRead()) {
+            file.inputStream().use { props.load(it) }
+        }
+
+        val serverUrl = props.getProperty("server.url", config.serverUrl).trim()
+        val isTunnelBound = serverUrl.isNotBlank() && !serverUrl.contains("example.com")
+
+        val r2Bucket = props.getProperty("r2.bucket", config.r2Bucket).trim()
+        val r2Endpoint = props.getProperty("r2.endpoint", config.r2Endpoint).trim()
+        val isR2Bound = r2Bucket.isNotBlank() && !r2Bucket.contains("example")
+
+        val d1Id = props.getProperty("d1.database_id", config.d1DatabaseId).trim()
+        val d1Name = props.getProperty("d1.database_name", config.d1DatabaseName).trim()
+        val d1Acc = props.getProperty("d1.account_id", config.d1AccountId).trim()
+        val isD1Bound = d1Id.isNotBlank()
+
+        val cfTok = props.getProperty("cf.api_token", "").trim()
+        val hasApiToken = cfTok.isNotBlank()
+
+        return CfCloudBindingsResponse(
+            serverUrl = serverUrl,
+            isTunnelBound = isTunnelBound,
+            r2Endpoint = r2Endpoint,
+            r2Bucket = r2Bucket,
+            isR2Bound = isR2Bound,
+            d1DatabaseId = d1Id,
+            d1DatabaseName = d1Name,
+            d1AccountId = d1Acc,
+            isD1Bound = isD1Bound,
+            hasApiToken = hasApiToken,
+            isAllBound = isTunnelBound && isR2Bound && isD1Bound
+        )
     }
 
     /**
