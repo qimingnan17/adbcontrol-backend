@@ -380,6 +380,30 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
+    fun getPrimaryAdmin(): AdminUser? {
+        val ds = dataSource ?: ensureDataSource() ?: return null
+        val sql = "SELECT id, username, password_hash, role, created_at, last_login_at, totp_secret FROM admin_user ORDER BY id ASC LIMIT 1"
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery(sql).use { rs ->
+                        if (rs.next()) {
+                            AdminUser(
+                                id = rs.getInt("id"),
+                                username = rs.getString("username"),
+                                passwordHash = rs.getString("password_hash"),
+                                role = rs.getString("role"),
+                                createdAt = rs.getLong("created_at"),
+                                lastLoginAt = rs.getLong("last_login_at"),
+                                totpSecret = rs.getString("totp_secret")
+                            )
+                        } else null
+                    }
+                }
+            }
+        }.getOrNull()
+    }
+
     /**
      * 管理员是否已初始化。DB 不可达时返回 true(fail-closed):
      * 宁可不显示初始化界面,也不允许在状态未知时开放创建管理员的入口。

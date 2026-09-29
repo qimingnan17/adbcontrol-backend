@@ -74,6 +74,7 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         val emqxIngestPwd = props.getProperty("emqx.ingest_password", "")
         val dbPwd = props.getProperty("db.password", "")
         val pmTok = props.getProperty("pm.token", "")
+        val cfTok = props.getProperty("cf.api_token", "")
 
         return SecretsResponse(
             filePath = file.absolutePath,
@@ -108,6 +109,10 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
                 user = props.getProperty("db.user", config.dbUser),
                 password = maskSecret(dbPwd.ifEmpty { config.dbPassword }),
                 hasPassword = (dbPwd.isNotBlank() || config.dbPassword.isNotBlank()),
+            ),
+            cf = CfSecrets(
+                apiToken = maskSecret(cfTok),
+                hasApiToken = cfTok.isNotBlank()
             )
         )
     }
@@ -146,6 +151,9 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             appendLine("# ---- Server & PM ----")
             appendLine("server.url = ${map["server.url"] ?: config.serverUrl}")
             appendLine("pm.token = ${map["pm.token"] ?: ""}")
+            appendLine()
+            appendLine("# ---- Cloudflare API & Token ----")
+            appendLine("cf.api_token = ${map["cf.api_token"] ?: ""}")
             appendLine()
             appendLine("# ---- Cloudflare R2 ----")
             appendLine("r2.endpoint = ${map["r2.endpoint"] ?: config.r2Endpoint}")
