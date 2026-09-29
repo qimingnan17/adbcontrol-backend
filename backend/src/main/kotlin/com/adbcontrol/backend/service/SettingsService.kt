@@ -75,6 +75,10 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         val dbPwd = props.getProperty("db.password", "")
         val pmTok = props.getProperty("pm.token", "")
         val cfTok = props.getProperty("cf.api_token", "")
+        val cfTeamDomain = props.getProperty("cf.team_domain", "")
+        val cfOidcClientId = props.getProperty("cf.oidc_client_id", "")
+        val cfOidcClientSecret = props.getProperty("cf.oidc_client_secret", "")
+        val cfOidcRedirectUri = props.getProperty("cf.oidc_redirect_uri", "")
 
         return SecretsResponse(
             filePath = file.absolutePath,
@@ -112,9 +116,25 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             ),
             cf = CfSecrets(
                 apiToken = maskSecret(cfTok),
-                hasApiToken = cfTok.isNotBlank()
+                hasApiToken = cfTok.isNotBlank(),
+                teamDomain = cfTeamDomain,
+                oidcClientId = cfOidcClientId,
+                oidcClientSecret = maskSecret(cfOidcClientSecret),
+                hasOidcClientSecret = cfOidcClientSecret.isNotBlank(),
+                oidcRedirectUri = cfOidcRedirectUri
             )
         )
+    }
+
+    /**
+     * 读取指定配置项原始未脱敏值。
+     */
+    fun getRawProperty(key: String, default: String = ""): String {
+        val file = getSecretsFile()
+        if (!file.exists() || !file.canRead()) return default
+        val props = Properties()
+        runCatching { file.inputStream().use { props.load(it) } }
+        return props.getProperty(key, default).trim()
     }
 
     /**
@@ -152,8 +172,12 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             appendLine("server.url = ${map["server.url"] ?: config.serverUrl}")
             appendLine("pm.token = ${map["pm.token"] ?: ""}")
             appendLine()
-            appendLine("# ---- Cloudflare API & Token ----")
+            appendLine("# ---- Cloudflare API & Zero Trust OIDC ----")
             appendLine("cf.api_token = ${map["cf.api_token"] ?: ""}")
+            appendLine("cf.team_domain = ${map["cf.team_domain"] ?: ""}")
+            appendLine("cf.oidc_client_id = ${map["cf.oidc_client_id"] ?: ""}")
+            appendLine("cf.oidc_client_secret = ${map["cf.oidc_client_secret"] ?: ""}")
+            appendLine("cf.oidc_redirect_uri = ${map["cf.oidc_redirect_uri"] ?: ""}")
             appendLine()
             appendLine("# ---- Cloudflare R2 ----")
             appendLine("r2.endpoint = ${map["r2.endpoint"] ?: config.r2Endpoint}")
