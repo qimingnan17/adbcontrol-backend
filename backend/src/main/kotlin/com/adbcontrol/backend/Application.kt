@@ -30,6 +30,10 @@ import io.ktor.server.application.install
 import org.slf4j.LoggerFactory
 import io.ktor.server.netty.EngineMain
 import io.ktor.server.plugins.calllogging.CallLogging
+import io.ktor.server.plugins.compression.Compression
+import io.ktor.server.plugins.compression.deflate
+import io.ktor.server.plugins.compression.gzip
+import io.ktor.server.plugins.compression.minimumSize
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
@@ -67,6 +71,18 @@ fun Application.module() {
 
     install(ContentNegotiation) {
         json(json)
+    }
+    // 响应体压缩：前端首屏需下载 ~1.6MB 未压缩资源，在 Tailscale / 弱网链路上必然超时。
+    // 开启 gzip 后 element-plus chunk 906KB → ~294KB，首屏可下载。静态资源与 API 一并受益。
+    install(Compression) {
+        gzip {
+            priority = 1.0
+            minimumSize(1024)
+        }
+        deflate {
+            priority = 0.5
+            minimumSize(1024)
+        }
     }
     install(CallLogging)
     configureCors()

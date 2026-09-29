@@ -35,6 +35,7 @@ dependencies {
     implementation(libs.ktor.server.call.logging)
     implementation(libs.ktor.server.config.yaml)
     implementation("io.ktor:ktor-server-cors-jvm:${libs.versions.ktor.get()}")  // Bug#23: CORS 插件, Ktor 3.x 用 -jvm suffix
+    implementation("io.ktor:ktor-server-compression-jvm:${libs.versions.ktor.get()}") // 静态资源/API 响应 gzip,缓解弱网首屏
     implementation("org.mindrot:jbcrypt:0.4")
     implementation("commons-codec:commons-codec:1.17.0") // PairingService generatePairToken 的 Base32 编码
 
