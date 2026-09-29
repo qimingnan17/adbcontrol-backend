@@ -46,7 +46,7 @@ class TaskSchedulerService(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** taskId -> 最近一次发火的目标 timestamp(去重) */
-    @Volatile private var lastFire: Map<Int, Long> = emptyMap()
+    @Volatile private var lastFire: Map<Long, Long> = emptyMap()
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -72,7 +72,7 @@ class TaskSchedulerService(
             val enabled = task["enabled"] as? Boolean ?: false
             if (!enabled) continue
             val expr = (task["cronExpr"] as? String)?.takeIf { it.isNotBlank() } ?: continue
-            val taskId = (task["id"] as? Number)?.toInt() ?: continue
+            val taskId = (task["id"] as? Number)?.toLong() ?: continue
 
             val fireAt = shouldFire(expr, windowStart, nowZoned)
             if (fireAt == null || lastFire[taskId] == fireAt) continue
@@ -96,7 +96,7 @@ class TaskSchedulerService(
             scope.launch {
                 for (devId in targets) {
                     val r = if (type == "notify") {
-                        bridge.dispatchReminder(devId, args, taskId = taskId.toLong())
+                        bridge.dispatchReminder(devId, args, taskId = taskId)
                     } else {
                         bridge.dispatch(devId, type, args)
                     }

@@ -75,10 +75,57 @@ class DeviceCommandBridge(
 
     /** Web type/args → shared Command(纯函数,便于单元测试)。 */
     internal fun mapCommand(type: String, args: Map<String, String>): MapResult = when (type) {
+        "input_tap", "tap" -> {
+            val x = args["x"]?.trim()
+            val y = args["y"]?.trim()
+            if (x.isNullOrEmpty() || y.isNullOrEmpty()) MapResult.MissingField("x/y")
+            else MapResult.Mapped(Command(CommandCategory.INPUT, "tap", mapOf("x" to x, "y" to y)))
+        }
+        "input_swipe", "swipe" -> {
+            val x1 = args["x1"]?.trim()
+            val y1 = args["y1"]?.trim()
+            val x2 = args["x2"]?.trim()
+            val y2 = args["y2"]?.trim()
+            val durationMs = args["durationMs"]?.trim() ?: "300"
+            if (x1.isNullOrEmpty() || y1.isNullOrEmpty() || x2.isNullOrEmpty() || y2.isNullOrEmpty()) MapResult.MissingField("x1/y1/x2/y2")
+            else MapResult.Mapped(Command(CommandCategory.INPUT, "swipe", mapOf("x1" to x1, "y1" to y1, "x2" to x2, "y2" to y2, "durationMs" to durationMs)))
+        }
+        "input_keyevent", "keyevent" -> {
+            val code = args["code"]?.trim()
+            if (code.isNullOrEmpty()) MapResult.MissingField("code")
+            else MapResult.Mapped(Command(CommandCategory.INPUT, "keyevent", mapOf("code" to code)))
+        }
+        "input_text", "text" -> {
+            val text = args["text"]
+            if (text == null) MapResult.MissingField("text")
+            else MapResult.Mapped(Command(CommandCategory.INPUT, "text", mapOf("text" to text)))
+        }
+        "clipboard_paste", "paste_text" -> {
+            val text = args["text"]
+            if (text == null) MapResult.MissingField("text")
+            else MapResult.Mapped(Command(CommandCategory.INPUT, "pasteText", mapOf("text" to text)))
+        }
         "shell" -> {
             val cmd = args["command"]?.trim()
             if (cmd.isNullOrEmpty()) MapResult.MissingField("command")
-            else MapResult.Mapped(Command(CommandCategory.FILE, "shell", mapOf("cmd" to cmd)))
+            else {
+                // 兼容回退：如果客户端直接发了 input tap / swipe / keyevent / text，自动转为 INPUT 结构化模型
+                val tapMatch = Regex("^input\\s+tap\\s+(\\d+)\\s+(\\d+)$").find(cmd)
+                val swipeMatch = Regex("^input\\s+swipe\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)(?:\\s+(\\d+))?$").find(cmd)
+                val keyMatch = Regex("^input\\s+keyevent\\s+([A-Z0-9_]+)$").find(cmd)
+                val textMatch = Regex("^input\\s+text\\s+[\"']?(.*?)[\"']?$").find(cmd)
+                when {
+                    tapMatch != null -> MapResult.Mapped(Command(CommandCategory.INPUT, "tap", mapOf("x" to tapMatch.groupValues[1], "y" to tapMatch.groupValues[2])))
+                    swipeMatch != null -> MapResult.Mapped(Command(CommandCategory.INPUT, "swipe", mapOf(
+                        "x1" to swipeMatch.groupValues[1], "y1" to swipeMatch.groupValues[2],
+                        "x2" to swipeMatch.groupValues[3], "y2" to swipeMatch.groupValues[4],
+                        "durationMs" to (swipeMatch.groupValues[5].ifEmpty { "300" })
+                    )))
+                    keyMatch != null -> MapResult.Mapped(Command(CommandCategory.INPUT, "keyevent", mapOf("code" to keyMatch.groupValues[1])))
+                    textMatch != null -> MapResult.Mapped(Command(CommandCategory.INPUT, "text", mapOf("text" to textMatch.groupValues[1])))
+                    else -> MapResult.Mapped(Command(CommandCategory.FILE, "shell", mapOf("cmd" to cmd)))
+                }
+            }
         }
         "launch_app" -> {
             val pkg = args["packageName"]?.trim()

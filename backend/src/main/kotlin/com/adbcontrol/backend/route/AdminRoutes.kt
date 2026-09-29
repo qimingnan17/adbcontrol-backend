@@ -133,7 +133,7 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         }
 
         delete("/api/tasks/{id}") {
-            val id = call.parameters["id"]?.toIntOrNull()
+            val id = call.parameters["id"]?.toLongOrNull()
                 ?: return@delete call.respond(HttpStatusCode.BadRequest, mapOf("message" to "invalid task id"))
             val n = db.deleteTask(id)
             call.respond(mapOf("deleted" to n))

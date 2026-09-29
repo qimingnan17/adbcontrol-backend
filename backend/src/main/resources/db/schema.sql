@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS task (
   cron_expr    VARCHAR(64),
   command_json TEXT         NOT NULL,
   enabled      BOOLEAN      NOT NULL DEFAULT TRUE,
-  created_at   BIGINT       NOT NULL
+  created_at   BIGINT       NOT NULL,
+  INDEX idx_task_device (device_id)
 );
 
 -- 命令执行日志(msg_id 幂等,防 QoS 1 重发导致重复入库)
