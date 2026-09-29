@@ -127,7 +127,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
      * 原子记录任务发火时间。成功更新返回 true,已在该时刻或更新时刻发过则返回 false。
      * 用于多实例并发防重与重启防重。
      */
-    fun markTaskFired(taskId: Int, fireAt: Long): Boolean {
+    fun markTaskFired(taskId: Long, fireAt: Long): Boolean {
         val ds = dataSource ?: ensureDataSource() ?: run {
             logger.error("markTaskFired skipped: DataSource unavailable for taskId={}", taskId)
             return false
@@ -137,7 +137,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                 val sql = "UPDATE task SET last_fired_at = ? WHERE task_id = ? AND (last_fired_at IS NULL OR last_fired_at < ?)"
                 conn.prepareStatement(sql).use { ps ->
                     ps.setLong(1, fireAt)
-                    ps.setInt(2, taskId)
+                    ps.setLong(2, taskId)
                     ps.setLong(3, fireAt)
                     ps.executeUpdate() > 0
                 }
@@ -737,12 +737,12 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         }
     }
 
-    fun deleteTask(id: Int): Int {
+    fun deleteTask(id: Long): Int {
         val ds = dataSource ?: ensureDataSource() ?: return 0
         return runCatching {
             ds.connection.use { conn ->
                 conn.prepareStatement("DELETE FROM task WHERE task_id = ?").use { ps ->
-                    ps.setInt(1, id)
+                    ps.setLong(1, id)
                     ps.executeUpdate()
                 }
             }
@@ -828,6 +828,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 "taskId" to (rs.getObject("task_id")?.let { (it as Number).toLong() } ?: 0L),
                                 "deviceId" to rs.getString("device_id"),
                                 "msgId" to (rs.getString("msg_id") ?: ""),
+                                "commandId" to (rs.getString("msg_id") ?: ""),
                                 "success" to rs.getBoolean("success"),
                                 "output" to (rs.getString("output") ?: ""),
                                 "durationMs" to rs.getInt("duration_ms"),
