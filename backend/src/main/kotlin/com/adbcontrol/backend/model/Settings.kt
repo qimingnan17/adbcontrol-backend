@@ -49,13 +49,20 @@ data class DbSecrets(
 )
 
 @Serializable
+data class CfSecrets(
+    val apiToken: String = "",
+    val hasApiToken: Boolean = false
+)
+
+@Serializable
 data class SecretsResponse(
     val filePath: String,
     val exists: Boolean,
     val r2: R2Secrets,
     val emqx: EmqxSecrets,
     val server: ServerSecrets,
-    val db: DbSecrets
+    val db: DbSecrets,
+    val cf: CfSecrets = CfSecrets()
 )
 
 @Serializable

@@ -100,6 +100,7 @@ fun Application.module() {
     val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
     val updateService = UpdateService(config, databaseService)
     val settingsService = SettingsService(config)
+    val cloudflareService = com.adbcontrol.backend.service.CloudflareService()
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
@@ -110,6 +111,7 @@ fun Application.module() {
 
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
+        cloudflareService.close()
         settingsService.close()
         taskScheduler.close()
         telemetryIngest.close()
@@ -130,10 +132,10 @@ fun Application.module() {
             // 显式声明类型为 Map<String, String>
             call.respond(mapOf("status" to "ok", "time" to System.currentTimeMillis().toString()))
         }
-        authRoutes(databaseService)
+        authRoutes(databaseService, cloudflareService, settingsService)
         // 受 auth 保护的 admin 路由放在 authenticate 块里(由 AdminRoutes.kt 内部 authenticate("auth-session") 控制)
         adminRoutes(databaseService, pairingService, commandBridge)
-        settingsRoutes(settingsService)
+        settingsRoutes(settingsService, cloudflareService)
         pairingRoutes(pairingService)
         updateRoutes(updateService, commandBridge)
         // APK 下载中转:/update/apk?url=<GitHub Release 链接>(check 响应里的直链会被改写指向这里)

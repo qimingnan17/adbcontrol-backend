@@ -1,11 +1,12 @@
 package com.adbcontrol.backend.route
 
-import com.adbcontrol.backend.model.LoginRequest
-import com.adbcontrol.backend.model.LoginResponse
+import com.adbcontrol.backend.model.*
 import com.adbcontrol.backend.plugin.UserSession
 import com.adbcontrol.backend.security.LoginRateLimiter
 import com.adbcontrol.backend.security.PasswordHasher
+import com.adbcontrol.backend.service.CloudflareService
 import com.adbcontrol.backend.service.DatabaseService
+import com.adbcontrol.backend.service.SettingsService
 import io.ktor.server.application.*
 import io.ktor.server.auth.*
 import io.ktor.server.request.*
@@ -14,6 +15,7 @@ import io.ktor.server.routing.*
 import io.ktor.server.sessions.*
 import io.ktor.http.*
 import kotlinx.serialization.Serializable
+import java.util.UUID
 
 /** 改密请求体(仅已登录管理员改自己)。 */
 @Serializable
@@ -35,7 +37,7 @@ private fun ApplicationCall.clientIp(): String =
         ?: request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
         ?: request.local.remoteAddress
 
-fun Route.authRoutes(db: DatabaseService) {
+fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settingsService: SettingsService) {
     /**
      * 首次访问初始化流程:前端据此在登录页切换"初始化管理员"模式。
      * 已初始化后此接口只回 true,不再暴露任何创建入口。
@@ -112,6 +114,86 @@ fun Route.authRoutes(db: DatabaseService) {
         db.updateAdminLastLogin(admin.id)
         LoginRateLimiter.clear("ip:$remoteIp")
         LoginRateLimiter.clear(userIpKey)
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
+    }
+
+    /**
+     * 探测是否存在 Cloudflare Zero Trust (Access) SSO 身份认证请求头。
+     * 若存在，前端可提示用户"检测到 Cloudflare 账户，一键免密登录"。
+     */
+    get("/api/auth/cf-access") {
+        val cfEmail = call.request.header("Cf-Access-Authenticated-User-Email")?.trim()
+        if (!cfEmail.isNullOrBlank()) {
+            val primaryAdmin = db.getPrimaryAdmin()
+            call.respond(CfAccessStatusResponse(hasAccessHeader = true, email = cfEmail, user = primaryAdmin?.copy(passwordHash = "")))
+        } else {
+            call.respond(CfAccessStatusResponse(hasAccessHeader = false))
+        }
+    }
+
+    /**
+     * Cloudflare Zero Trust (Access) 免密登录：
+     * 基于 Cloudflare 隧道注入的 Cf-Access-Authenticated-User-Email 头校验身份。
+     */
+    post("/api/auth/cf-access-login") {
+        val cfEmail = call.request.header("Cf-Access-Authenticated-User-Email")?.trim()
+        if (cfEmail.isNullOrBlank()) {
+            call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "未检测到 Cloudflare Zero Trust (Access) 认证头"))
+            return@post
+        }
+        var admin = db.getPrimaryAdmin()
+        if (admin == null) {
+            val username = cfEmail.substringBefore("@").filter { it.isLetterOrDigit() || it in "_.-" }.take(32)
+                .ifEmpty { "cf_admin" }
+            admin = db.createInitialAdmin(username, UUID.randomUUID().toString())
+        }
+        if (admin == null) {
+            call.respond(HttpStatusCode.InternalServerError, mapOf("message" to "无法绑定管理员身份"))
+            return@post
+        }
+        db.updateAdminLastLogin(admin.id)
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
+    }
+
+    /**
+     * Cloudflare API Token 授权登录：
+     * 用户提供 Cloudflare API Token，校验有效性后直接发放管理员会话，并自动将 Token 保存至系统配置。
+     */
+    post("/api/auth/cf-token-login") {
+        val remoteIp = call.clientIp()
+        if (LoginRateLimiter.isLocked("cftoken:ip:$remoteIp")) {
+            call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "Token 登录失败过多，请 5 分钟后再试"))
+            return@post
+        }
+        val req = runCatching { call.receive<CfTokenLoginRequest>() }.getOrNull()
+        val token = req?.apiToken?.trim()
+        if (token.isNullOrBlank()) {
+            LoginRateLimiter.fail("cftoken:ip:$remoteIp")
+            call.respond(HttpStatusCode.BadRequest, mapOf("message" to "Cloudflare API Token 不能为空"))
+            return@post
+        }
+        val verifyInfo = cfService.verifyToken(token)
+        if (!verifyInfo.valid) {
+            LoginRateLimiter.fail("cftoken:ip:$remoteIp")
+            call.respond(HttpStatusCode.Unauthorized, mapOf("message" to (verifyInfo.message ?: "Token 校验失败")))
+            return@post
+        }
+        var admin = db.getPrimaryAdmin()
+        if (admin == null) {
+            admin = db.createInitialAdmin("admin", UUID.randomUUID().toString())
+        }
+        if (admin == null) {
+            call.respond(HttpStatusCode.InternalServerError, mapOf("message" to "系统初始化失败"))
+            return@post
+        }
+        LoginRateLimiter.clear("cftoken:ip:$remoteIp")
+        db.updateAdminLastLogin(admin.id)
+        // 自动保存 token 到 secrets.properties 便于后台使用
+        runCatching {
+            settingsService.saveSecrets(mapOf("cf.api_token" to token))
+        }
         call.sessions.set(UserSession(admin.id, admin.username, admin.role))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }

@@ -1,8 +1,8 @@
 package com.adbcontrol.backend.route
 
-import com.adbcontrol.backend.model.NetworkStatusResponse
-import com.adbcontrol.backend.model.SettingsOperationResponse
+import com.adbcontrol.backend.model.*
 import com.adbcontrol.backend.security.NetworkSecurity
+import com.adbcontrol.backend.service.CloudflareService
 import com.adbcontrol.backend.service.SettingsService
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -51,7 +51,7 @@ private suspend fun ApplicationCall.ensureTailscaleOrLocal(): Boolean {
     return true
 }
 
-fun Route.settingsRoutes(settingsService: SettingsService) {
+fun Route.settingsRoutes(settingsService: SettingsService, cfService: CloudflareService) {
     // 网络模式检查：诊断探针无需强制会话，方便前端未登录或初始化时也能判断网络环境
     get("/api/admin/settings/network") {
         val isTailscale = NetworkSecurity.isLocalOrTailscale(call)
@@ -137,6 +137,76 @@ fun Route.settingsRoutes(settingsService: SettingsService) {
                 CoroutineScope(Dispatchers.IO).launch {
                     delay(1000)
                     exitProcess(0)
+                }
+            }
+
+            // 同步 Cloudflare 资源：获取账户、域名、隧道、R2 桶、D1 数据库
+            post("/cloudflare/sync") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfTokenLoginRequest>() }.getOrNull()
+                var token = req?.apiToken?.trim() ?: ""
+                if (token.isEmpty()) {
+                    // 尝试从持久化配置中读取
+                    val file = settingsService.getSecretsFile()
+                    val p = java.util.Properties().apply { if (file.exists()) file.inputStream().use { load(it) } }
+                    token = p.getProperty("cf.api_token", "")
+                }
+                if (token.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        CfAllResources(valid = false, message = "未提供 Cloudflare API Token，请先在下方输入或保存 Token")
+                    )
+                    return@post
+                }
+                val resources = cfService.fetchAllResources(token)
+                if (resources.valid && token.isNotEmpty() && !token.contains("******")) {
+                    // 同步成功后自动记录 token 至 secrets
+                    settingsService.saveSecrets(mapOf("cf.api_token" to token))
+                }
+                call.respond(resources)
+            }
+
+            // 一键应用 Cloudflare R2 存储桶配置到系统
+            post("/cloudflare/apply-r2") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfApplyR2Request>() }.getOrNull()
+                if (req == null || req.endpoint.isBlank() || req.bucket.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        SettingsOperationResponse(ok = false, message = "R2 Endpoint 与 Bucket 不能为空")
+                    )
+                    return@post
+                }
+                val updates = mutableMapOf(
+                    "r2.endpoint" to req.endpoint.trim(),
+                    "r2.bucket" to req.bucket.trim()
+                )
+                if (!req.accessKey.isNullOrBlank()) updates["r2.access_key"] = req.accessKey.trim()
+                if (!req.accessSecret.isNullOrBlank()) updates["r2.access_secret"] = req.accessSecret.trim()
+                val ok = settingsService.saveSecrets(updates)
+                if (ok) {
+                    call.respond(SettingsOperationResponse(ok = true, message = "已成功应用 Cloudflare R2 存储配置"))
+                } else {
+                    call.respond(HttpStatusCode.InternalServerError, SettingsOperationResponse(ok = false, message = "保存 R2 配置失败"))
+                }
+            }
+
+            // 一键将 Cloudflare 隧道域名应用为系统服务地址
+            post("/cloudflare/apply-tunnel") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfApplyTunnelRequest>() }.getOrNull()
+                if (req == null || req.serverUrl.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        SettingsOperationResponse(ok = false, message = "服务地址不能为空")
+                    )
+                    return@post
+                }
+                val ok = settingsService.saveSecrets(mapOf("server.url" to req.serverUrl.trim()))
+                if (ok) {
+                    call.respond(SettingsOperationResponse(ok = true, message = "已将 Cloudflare 隧道域名设为服务地址"))
+                } else {
+                    call.respond(HttpStatusCode.InternalServerError, SettingsOperationResponse(ok = false, message = "保存服务地址失败"))
                 }
             }
         }
