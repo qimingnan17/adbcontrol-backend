@@ -387,6 +387,222 @@ fun Route.settingsRoutes(settingsService: SettingsService, cfService: Cloudflare
                 }
             }
 
+            // 一键隧道穿透：将服务绑定到托管域名的指定子域名
+            // (创建/选用隧道 → 配置 ingress → 绑定 DNS 路由 → 更新 server.url)
+            post("/cloudflare/provision-tunnel") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfProvisionTunnelRequest>() }.getOrNull()
+                if (req == null || req.subdomain.isBlank() || (req.zoneId.isNullOrBlank() && req.zoneName.isNullOrBlank())) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        CfProvisionTunnelResponse(ok = false, message = "请提供子域名前缀及目标域名 (zoneId 或 zoneName)")
+                    )
+                    return@post
+                }
+                val subdomain = req.subdomain.trim().lowercase()
+                if (!Regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$").matches(subdomain)) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        CfProvisionTunnelResponse(ok = false, message = "子域名前缀只能包含小写字母、数字与中划线")
+                    )
+                    return@post
+                }
+                var token = req.apiToken?.trim() ?: ""
+                if (token.isEmpty() || token.contains("******")) {
+                    token = settingsService.getRawProperty("cf.api_token", "")
+                }
+                if (token.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        CfProvisionTunnelResponse(ok = false, message = "未检测到 Cloudflare API Token，请先在下方保存 Token")
+                    )
+                    return@post
+                }
+
+                val steps = mutableListOf<CfProvisionStep>()
+
+                // 1. 解析目标 Zone
+                val zonesRes = cfService.fetchZones(token)
+                val zones = zonesRes.data ?: emptyList()
+                if (zones.isEmpty()) {
+                    call.respond(
+                        CfProvisionTunnelResponse(
+                            ok = false,
+                            message = "无法读取托管域名：${zonesRes.error ?: "账户下没有已托管的域名"}"
+                        )
+                    )
+                    return@post
+                }
+                val zone = zones.firstOrNull { it.id == req.zoneId }
+                    ?: zones.firstOrNull { it.name.equals(req.zoneName?.trim(), ignoreCase = true) }
+                if (zone == null) {
+                    call.respond(
+                        CfProvisionTunnelResponse(
+                            ok = false,
+                            message = "未找到目标域名 ${req.zoneName ?: req.zoneId}，请确认其已托管在该 Cloudflare 账户下"
+                        )
+                    )
+                    return@post
+                }
+                val hostname = "$subdomain.${zone.name}"
+
+                // 2. 解析账户
+                val accountsRes = cfService.fetchAccounts(token)
+                val accounts = accountsRes.data ?: emptyList()
+                if (accounts.isEmpty()) {
+                    call.respond(
+                        CfProvisionTunnelResponse(
+                            ok = false,
+                            hostname = hostname,
+                            message = "无法读取 Cloudflare 账户：${accountsRes.error ?: "请确认 Token 含有「帐户设置:Read」权限"}"
+                        )
+                    )
+                    return@post
+                }
+                val accountId = accounts.first().id
+
+                // 3. 选用现有隧道或创建新隧道
+                var tunnelId = req.tunnelId?.trim().orEmpty()
+                var tunnelName = req.tunnelName?.trim().orEmpty()
+                if (tunnelId.isBlank()) {
+                    val newName = tunnelName.ifBlank { "adbcontrol" }
+                    val created = cfService.createTunnel(token, accountId, newName)
+                    val newId = created.tunnelId
+                    steps.add(CfProvisionStep("create_tunnel", created.ok, created.message))
+                    if (!created.ok || newId.isNullOrBlank()) {
+                        call.respond(
+                            CfProvisionTunnelResponse(
+                                ok = false,
+                                hostname = hostname,
+                                steps = steps,
+                                message = "创建隧道失败：${created.message ?: "未知错误"}"
+                            )
+                        )
+                        return@post
+                    }
+                    tunnelId = newId
+                    tunnelName = newName
+                } else {
+                    if (tunnelName.isBlank()) {
+                        tunnelName = cfService.fetchTunnels(token, accountId).data
+                            ?.firstOrNull { it.id == tunnelId }?.name ?: tunnelId
+                    }
+                    steps.add(CfProvisionStep("use_tunnel", true, "使用现有隧道「$tunnelName」"))
+                }
+
+                // 4. 配置 ingress（合并语义；本地 config.yml 托管的旧隧道可能不生效，仅提示不中断）
+                val localPort = if (req.localPort in 1..65535) req.localPort else 8080
+                val mqttWssHost = if (req.enableMqttWss) settingsService.getRawProperty("emqx.host", "").trim() else null
+                val ingress = cfService.putTunnelIngress(
+                    token, accountId, tunnelId, hostname, localPort,
+                    mqttWssHost?.takeIf { it.isNotBlank() }
+                )
+                steps.add(CfProvisionStep("config_ingress", ingress.ok, ingress.message))
+                if (req.enableMqttWss) {
+                    if (mqttWssHost.isNullOrBlank()) {
+                        steps.add(CfProvisionStep("enable_mqtt_wss", false, "未配置 EMQX Host，已跳过 /mqtt 入口"))
+                    } else {
+                        steps.add(CfProvisionStep("enable_mqtt_wss", true, "/mqtt 已指向 $mqttWssHost:8084"))
+                    }
+                }
+
+                // 5. 绑定 DNS 路由（决定性步骤）
+                val dns = cfService.bindTunnelDnsRoute(token, accountId, tunnelId, hostname)
+                steps.add(CfProvisionStep("bind_dns", dns.ok, dns.message))
+                if (!dns.ok) {
+                    call.respond(
+                        CfProvisionTunnelResponse(
+                            ok = false,
+                            hostname = hostname,
+                            tunnelId = tunnelId,
+                            tunnelName = tunnelName,
+                            steps = steps,
+                            message = "DNS 绑定失败：${dns.message ?: "请确认 Token 含有「区域 DNS:Edit」权限"}"
+                        )
+                    )
+                    return@post
+                }
+
+                // 6. 获取连接器 Token，生成云电脑侧一键拉起命令
+                val tunnelToken = cfService.getTunnelToken(token, accountId, tunnelId)
+                val connectorCommand = tunnelToken?.let { "cloudflared service install $it" }
+                    ?: run {
+                        steps.add(CfProvisionStep("fetch_token", false, "未能获取连接器 Token（不影响域名绑定）"))
+                        null
+                    }
+
+                // 7. 更新系统对外服务地址
+                val serverUrl = "https://$hostname"
+                settingsService.saveSecrets(mapOf("server.url" to serverUrl))
+
+                val warn = if (!ingress.ok) {
+                    "；注意：ingress 未生效，该隧道可能由本地 config.yml 托管，请确保本地配置将流量转发到 localhost:$localPort，或改用新建隧道"
+                } else ""
+                call.respond(
+                    CfProvisionTunnelResponse(
+                        ok = true,
+                        hostname = hostname,
+                        serverUrl = serverUrl,
+                        tunnelId = tunnelId,
+                        tunnelName = tunnelName,
+                        connectorCommand = connectorCommand,
+                        steps = steps,
+                        message = "穿透绑定成功：$serverUrl 已指向本地端口 $localPort$warn"
+                    )
+                )
+            }
+
+            // 新建隧道（仅建隧道，不含入口规则；用于「换用新隧道」或先行创建）
+            post("/cloudflare/create-tunnel") {
+                if (!call.ensureTailscaleOrLocal()) return@post
+                val req = runCatching { call.receive<CfCreateTunnelRequest>() }.getOrNull()
+                if (req == null || req.name.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, SettingsOperationResponse(ok = false, message = "请提供隧道名称"))
+                    return@post
+                }
+                val name = req.name.trim()
+                if (!Regex("^[a-zA-Z0-9][a-zA-Z0-9_-]{0,60}$").matches(name)) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        SettingsOperationResponse(ok = false, message = "隧道名称只能包含字母、数字、中划线与下划线")
+                    )
+                    return@post
+                }
+                var token = req.apiToken?.trim() ?: ""
+                if (token.isEmpty() || token.contains("******")) {
+                    token = settingsService.getRawProperty("cf.api_token", "")
+                }
+                if (token.isBlank()) {
+                    call.respond(
+                        HttpStatusCode.BadRequest,
+                        SettingsOperationResponse(ok = false, message = "未检测到 Cloudflare API Token，请先在「隧道与域名」中保存 Token")
+                    )
+                    return@post
+                }
+                val accounts = cfService.fetchAccounts(token).data ?: emptyList()
+                if (accounts.isEmpty()) {
+                    call.respond(
+                        SettingsOperationResponse(ok = false, message = "无法读取 Cloudflare 账户，请确认 Token 含有「帐户设置:Read」权限")
+                    )
+                    return@post
+                }
+                val created = cfService.createTunnel(token, accounts.first().id, name)
+                if (created.ok && created.tunnelId != null) {
+                    call.respond(
+                        CfCreateTunnelResponse(
+                            ok = true,
+                            tunnelId = created.tunnelId,
+                            tunnelName = name,
+                            message = "隧道「$name」已创建，可到「添加主机名」把它绑定到域名"
+                        )
+                    )
+                } else {
+                    call.respond(
+                        SettingsOperationResponse(ok = false, message = created.message ?: "创建隧道失败")
+                    )
+                }
+            }
+
             // 用户手动批量绑定资源 (域名隧道、R2 存储桶、D1 数据库)
             post("/cloudflare/manual-bind") {
                 if (!call.ensureTailscaleOrLocal()) return@post

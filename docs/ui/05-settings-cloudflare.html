@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统设置 · Cloudflare 资源中心 — 交互原型</title>
+<style>
+  /* ============ 占位配色（后补）——中性浅色 + 单一青色强调 ============ */
+  :root {
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --border: #e4e8ee;
+    --text: #1f2937;
+    --text-2: #64748b;
+    --text-3: #94a3b8;
+    --accent: #0891b2;        /* 青色强调（占位） */
+    --accent-bg: #e8f6fa;
+    --ok: #16a34a;
+    --ok-bg: #f0fdf4;
+    --warn: #d97706;
+    --warn-bg: #fffbeb;
+    --danger: #dc2626;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 14px;
+    padding-bottom: 80px;
+  }
+  code, .mono { font-family: var(--mono); }
+
+  /* ============ 原型预览工具条（非正式 UI） ============ */
+  .demo-toolbar {
+    position: sticky; top: 0; z-index: 50;
+    background: #111827; color: #e5e7eb;
+    padding: 8px 16px; display: flex; align-items: center; gap: 12px;
+    font-size: 12px;
+  }
+  .demo-toolbar b { color: #67e8f9; font-weight: 600; }
+  .demo-toolbar .seg { display: inline-flex; border: 1px solid #374151; border-radius: 6px; overflow: hidden; }
+  .demo-toolbar .seg button {
+    background: transparent; color: #9ca3af; border: 0; padding: 4px 12px; cursor: pointer; font-size: 12px;
+  }
+  .demo-toolbar .seg button.on { background: #0891b2; color: #fff; }
+
+  /* ============ 页面骨架 ============ */
+  .page { max-width: 1080px; margin: 0 auto; padding: 20px 24px; }
+  .page-head {
+    display: flex; justify-content: space-between; align-items: center;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 20px; margin-bottom: 16px;
+  }
+  .page-head h1 { font-size: 18px; font-weight: 600; }
+  .page-head .acts { display: flex; gap: 8px; }
+
+  .tabs {
+    display: flex; gap: 4px; background: var(--card);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 6px; margin-bottom: 16px;
+  }
+  .tabs button {
+    border: 0; background: transparent; color: var(--text-2);
+    padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13.5px;
+  }
+  .tabs button.on { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .card .desc { color: var(--text-2); font-size: 12.5px; margin-bottom: 14px; }
+
+  /* ============ 按钮 ============ */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; color: var(--text);
+    transition: all .15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); color: #fff; }
+  .btn.link { border: 0; background: transparent; color: var(--accent); padding: 4px 6px; }
+  .btn.subtle { color: var(--text-2); }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ============ 对外服务地址卡片 ============ */
+  .addr-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; padding: 3px 10px; border-radius: 999px; font-weight: 500;
+  }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .badge.ok .dot { background: var(--ok); }
+  .badge.warn .dot { background: var(--warn); }
+
+  .addr-url { font-size: 22px; font-weight: 600; margin: 10px 0 2px; word-break: break-all; }
+  .addr-meta { color: var(--text-2); font-size: 13px; margin-top: 6px; }
+  .addr-meta b { color: var(--text); font-weight: 600; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip {
+    font-family: var(--mono); font-size: 12.5px;
+    background: #f1f5f9; border: 1px solid var(--border);
+    padding: 4px 10px; border-radius: 999px; color: var(--text);
+  }
+  .chip.hl { background: var(--accent-bg); border-color: #a5e3f2; color: var(--accent); }
+
+  .addr-acts { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; align-items: center; }
+
+  .mqtt-line {
+    margin-top: 14px; padding: 10px 14px; border-radius: 8px;
+    background: var(--accent-bg); border: 1px dashed #a5e3f2;
+    font-size: 12.5px; color: var(--text-2);
+  }
+  .mqtt-line b { color: var(--accent); }
+
+  /* 未绑定态 */
+  .addr-empty { text-align: center; padding: 30px 16px; }
+  .addr-empty .big { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .addr-empty .sub { color: var(--text-3); font-size: 12.5px; margin-bottom: 18px; }
+  .addr-empty .acts { display: flex; gap: 10px; justify-content: center; }
+
+  /* ============ 托管域名区 ============ */
+  .zone-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .zone-card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px; background: #fbfcfe;
+  }
+  .zone-card .name-row { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+  .tag.green { background: var(--ok-bg); color: var(--ok); }
+  .tag.gray { background: #f1f5f9; color: var(--text-2); }
+  .zone-card .zid { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); word-break: break-all; }
+  .zone-card .act { margin-top: 4px; }
+  .zone-card .bound-note { font-size: 12px; color: var(--ok); }
+
+  /* ============ 弹窗 ============ */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, .45);
+    display: none; align-items: flex-start; justify-content: center;
+    padding: 8vh 16px 16px; z-index: 100; overflow: auto;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 14px; width: 520px; max-width: 100%;
+    box-shadow: 0 20px 50px rgba(2, 8, 20, .25); overflow: hidden;
+  }
+  .modal .m-head {
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    font-size: 15px; font-weight: 600; display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal .m-head .x { border: 0; background: none; font-size: 18px; color: var(--text-3); cursor: pointer; }
+  .modal .m-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .modal .m-foot {
+    padding: 14px 20px; border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; gap: 10px;
+  }
+  .field label { display: block; font-size: 12.5px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
+  .input, select.input {
+    width: 100%; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px; font-size: 13.5px; background: #fff; color: var(--text);
+    outline: none;
+  }
+  .input:focus { border-color: var(--accent); }
+  .host-preview { display: flex; align-items: center; gap: 8px; }
+  .host-preview .suffix { font-family: var(--mono); color: var(--text-2); font-size: 13px; white-space: nowrap; }
+  .host-preview .input { flex: 1; }
+  .checkbox-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+  .checkbox-row input { margin-top: 2px; accent-color: var(--accent); }
+  .checkbox-row .hint { display: block; color: var(--text-3); font-size: 11.5px; margin-top: 2px; }
+  .quick-picks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .quick-picks .chip { cursor: pointer; }
+  .quick-picks .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* 步骤结果 */
+  .steps { display: none; flex-direction: column; gap: 8px; padding: 12px 14px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; }
+  .steps.show { display: flex; }
+  .step { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+  .step .mark { font-weight: 700; }
+  .step.ok .mark { color: var(--ok); }
+  .step.err .mark { color: var(--danger); }
+  .step .name { font-weight: 600; white-space: nowrap; }
+  .step .detail { color: var(--text-2); word-break: break-all; }
+  .result-ok { display: none; padding: 10px 14px; border-radius: 10px; background: var(--ok-bg); color: var(--ok); font-size: 12.5px; }
+  .result-ok.show { display: block; }
+  .result-err { display: none; padding: 10px 14px; border-radius: 10px; background: #fef2f2; color: var(--danger); font-size: 12.5px; }
+  .result-err.show { display: block; }
+  .cmd-box {
+    display: none; margin-top: 2px; padding: 10px 12px; border-radius: 8px;
+    background: #0f172a; color: #a5f3fc; font-family: var(--mono); font-size: 12px;
+    word-break: break-all; position: relative;
+  }
+  .cmd-box.show { display: block; }
+  .cmd-box .copy {
+    position: absolute; right: 8px; top: 8px; border: 1px solid #334155;
+    background: #1e293b; color: #cbd5e1; font-size: 11px; border-radius: 6px;
+    padding: 2px 8px; cursor: pointer;
+  }
+
+  /* toast */
+  #toast {
+    position: fixed; left: 50%; bottom: 40px; transform: translateX(-50%) translateY(20px);
+    background: #111827; color: #fff; font-size: 13px; padding: 10px 18px; border-radius: 8px;
+    opacity: 0; pointer-events: none; transition: all .25s; z-index: 200;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .note { font-size: 12px; color: var(--text-3); line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<!-- 原型预览工具条：仅用于走查两种状态，非正式 UI -->
+<div class="demo-toolbar">
+  <b>原型预览</b>
+  <span>预览状态：</span>
+  <span class="seg">
+    <button id="st-bound" class="on" onclick="setState(true)">已绑定</button>
+    <button id="st-empty" onclick="setState(false)">未绑定</button>
+  </span>
+  <span style="margin-left:auto; color:#64748b;">仅供布局与交互走查 · 具体配色后补</span>
+</div>
+
+<div class="page">
+  <!-- 页头（示意） -->
+  <div class="page-head">
+    <h1>系统设置</h1>
+    <div class="acts">
+      <button class="btn" onclick="toast('原型：刷新配置')">重新读取</button>
+      <button class="btn primary" onclick="toast('原型：保存配置')">保存配置</button>
+    </div>
+  </div>
+
+  <!-- 页签（示意，仅 CF 资源中心可交互） -->
+  <div class="tabs">
+    <button onclick="toast('原型：R2 页签')">Cloudflare R2 对象存储</button>
+    <button onclick="toast('原型：EMQX 页签')">EMQX MQTT Broker</button>
+    <button onclick="toast('原型：服务与网络页签')">服务与网络</button>
+    <button onclick="toast('原型：数据库页签')">数据库 (MariaDB)</button>
+    <button class="on">Cloudflare (CF) 资源中心</button>
+  </div>
+
+  <!-- ========== 1. 对外服务地址（核心卡片：只关注本系统自己的隧道，不展示其他隧道） ========== -->
+  <div class="card" id="addr-card-bound">
+    <div class="addr-head">
+      <div>
+        <h2>对外服务地址</h2>
+        <div class="desc">被控端配对、Web 控制台公网访问均经由该地址，流量走 Cloudflare 隧道（自动 IPv4 / IPv6 双栈）。</div>
+      </div>
+      <span class="badge ok"><span class="dot"></span>已生效</span>
+    </div>
+
+    <div class="addr-url mono">https://adb.aaaaaa.com</div>
+    <div class="addr-meta">承载隧道：<b>adbcontrol</b>（healthy · 2 连接） · 所属域名：<b>aaaaaa.com</b></div>
+
+    <div class="chips">
+      <span class="chip hl">adb.aaaaaa.com（当前地址）</span>
+      <span class="chip">status.aaaaaa.com</span>
+      <span class="chip">web.aaaaaa.com</span>
+    </div>
+    <div class="note" style="margin-top:6px;">以上为该隧道已绑定的全部主机名，添加新主机名不会影响已有条目。</div>
+
+    <div class="mqtt-line">
+      <b>MQTT over WSS 双栈通道：已开启</b>（/mqtt → EMQX :8084）。受控端将在「直连 8883（IPv4）」与「本地址 WSS（IPv4/IPv6 双栈）」间自动探测优选。
+    </div>
+
+    <div class="addr-acts">
+      <button class="btn primary" onclick="openModal('modal-url')">更换地址</button>
+      <button class="btn" onclick="openProvision()">添加主机名</button>
+      <button class="btn subtle" onclick="openModal('modal-newtunnel')">换用新隧道…</button>
+    </div>
+  </div>
+
+  <!-- 未绑定态 -->
+  <div class="card" id="addr-card-empty" style="display:none;">
+    <div class="addr-empty">
+      <div class="big">尚未绑定对外服务地址</div>
+      <div class="sub">绑定到某个托管域名的子域名后，系统会自动创建/选用隧道、配置入口并生成 DNS 记录。</div>
+      <div class="acts">
+        <button class="btn primary" onclick="openProvision()">绑定到托管域名</button>
+        <button class="btn" onclick="openModal('modal-url')">手动填写地址</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 2. 托管域名（添加主机名的入口） ========== -->
+  <div class="card">
+    <h2>托管域名（Zones · 2）</h2>
+    <div class="desc">域名已托管在当前 Cloudflare 账户。选择域名将其子域名通过隧道穿透到本服务。</div>
+    <div class="zone-grid">
+      <div class="zone-card">
+        <div class="name-row">aaaaaa.com <span class="tag green">active</span></div>
+        <div class="zid">Zone ID: 0123abcd…8ef</div>
+        <div class="bound-note">✓ 当前对外地址承载于此域名</div>
+        <div class="act"><button class="btn" onclick="openProvision('aaaaaa.com')">隧道穿透绑定</button></div>
+      </div>
+      <div class="zone-card">
+        <div class="name-row">example-hh.cn <span class="tag green">active</span></div>
+        <div class="zid">Zone ID: 9f8e7d6c…21</div>
+        <div class="act"><button class="btn" onclick="openProvision('example-hh.cn')">隧道穿透绑定</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 3. 探测信息（示意保留） ========== -->
+  <div class="card">
+    <h2>账户与 Token</h2>
+    <div class="desc">Token 校验通过 · 权限：帐户读取 / 隧道编辑 / DNS 编辑 / 区域读取</div>
+    <button class="btn" onclick="toast('原型：重新同步 Cloudflare 资源')">重新同步资源</button>
+  </div>
+</div>
+
+<!-- ========== 弹窗 1：隧道穿透绑定（添加主机名 / 首次绑定 共用） ========== -->
+<div class="overlay" id="modal-provision">
+  <div class="modal">
+    <div class="m-head">隧道穿透绑定域名 <button class="x" onclick="closeModal('modal-provision')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>目标域名 (Zone)</label>
+        <select class="input" id="pv-zone" onchange="pvSyncSuffix()">
+          <option>aaaaaa.com</option>
+          <option>example-hh.cn</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>子域名前缀</label>
+        <div class="host-preview">
+          <input class="input" id="pv-sub" value="status" oninput="pvSyncSuffix()">
+          <span class="suffix" id="pv-suffix">.aaaaaa.com</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>隧道</label>
+        <select class="input" id="pv-tunnel">
+          <option>当前隧道：adbcontrol（healthy · 保留已有 2 个主机名）</option>
+          <option>➕ 新建隧道…</option>
+        </select>
+      </div>
+      <div class="field" id="pv-newname-wrap" style="display:none;">
+        <label>新隧道名称</label>
+        <input class="input" id="pv-newname" value="adbcontrol-v2">
+      </div>
+      <div class="field">
+        <label>后端本地端口</label>
+        <input class="input" id="pv-port" value="8080" style="width:140px;">
+      </div>
+      <label class="checkbox-row">
+        <input type="checkbox" id="pv-wss" checked>
+        <span>同时开启 MQTT over WSS 双栈通道
+          <span class="hint">自动追加入口规则 /mqtt → EMQX :8084，受控端可在 IPv4 直连与本双栈通道间自动优选。</span>
+        </span>
+      </label>
+
+      <div class="result-err" id="pv-err"></div>
+      <div class="steps" id="pv-steps"></div>
+      <div class="result-ok" id="pv-ok"></div>
+      <div class="cmd-box" id="pv-cmd">cloudflared service install eyJhIjoiMG12...(隧道连接器 Token)<button class="copy" onclick="copyText(this)">复制</button></div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-provision')">关闭</button>
+      <button class="btn primary" id="pv-run" onclick="runProvision()">开始穿透绑定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 弹窗 2：更换对外地址 ========== -->
+<div class="overlay" id="modal-url">
+  <div class="modal">
+    <div class="m-head">更换对外服务地址 <button class="x" onclick="closeModal('modal-url')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>当前地址</label>
+        <input class="input" value="https://adb.aaaaaa.com" disabled>
+      </div>
+      <div class="field">
+        <label>新地址（需以 https:// 开头，不允许内网 / 保留地址）</label>
+        <input class="input" id="url-input" placeholder="https://">
+        <div class="quick-picks" id="url-picks">
+          <span class="chip" onclick="pickUrl('https://status.aaaaaa.com')">status.aaaaaa.com</span>
+          <span class="chip" onclick="pickUrl('https://web.aaaaaa.com')">web.aaaaaa.com</span>
+        </div>
+        <div class="note" style="margin-top:8px;">快选为当前隧道已绑定的其他主机名，点击直接填入。</div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-url')">取消</button>
+      <button class="btn primary" onclick="saveUrl()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== 弹窗 3：换用新隧道 ========== -->
+<div class="overlay" id="modal-newtunnel">
+  <div class="modal">
+    <div class="m-head">换用新隧道 <button class="x" onclick="closeModal('modal-newtunnel')">✕</button></div>
+    <div class="m-body">
+      <div class="field">
+        <label>新隧道名称</label>
+        <input class="input" value="adbcontrol-v2">
+        <div class="note" style="margin-top:8px;">
+          将创建一条全新的远程托管隧道，把当前对外地址与全部主机名迁移过去，并在云端给出连接器安装命令。
+          适用于旧隧道由本地 config.yml 托管、无法远程管理入口规则的情况。原隧道不会被删除。
+        </div>
+      </div>
+    </div>
+    <div class="m-foot">
+      <button class="btn" onclick="closeModal('modal-newtunnel')">取消</button>
+      <button class="btn primary" onclick="toast('原型：创建新隧道并迁移'); closeModal('modal-newtunnel')">创建并迁移</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  /* ---------- 原型交互脚本（真实实现走后端 API，这里仅演示） ---------- */
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._h);
+    t._h = setTimeout(function () { t.classList.remove('show'); }, 1800);
+  }
+
+  function setState(bound) {
+    $('addr-card-bound').style.display = bound ? '' : 'none';
+    $('addr-card-empty').style.display = bound ? 'none' : '';
+    $('st-bound').classList.toggle('on', bound);
+    $('st-empty').classList.toggle('on', !bound);
+  }
+
+  function openModal(id) {
+    if (id === 'modal-url' && !$('url-input').value) $('url-input').value = 'https://';
+    $('modal-url').classList.toggle('show', id === 'modal-url');
+    $('modal-newtunnel').classList.toggle('show', id === 'modal-newtunnel');
+  }
+  function closeModal(id) { $(id).classList.remove('show'); }
+
+  /* 穿透绑定弹窗 */
+  function openProvision(zone) {
+    if (zone) {
+      var sel = $('pv-zone');
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].text === zone) sel.selectedIndex = i;
+      }
+    }
+    $('pv-steps').classList.remove('show');
+    $('pv-ok').classList.remove('show');
+    $('pv-err').classList.remove('show');
+    $('pv-cmd').classList.remove('show');
+    $('pv-steps').innerHTML = '';
+    $('modal-provision').classList.add('show');
+    pvSyncSuffix();
+  }
+  function pvSyncSuffix() {
+    $('pv-suffix').textContent = '.' + $('pv-zone').value;
+    var isNew = $('pv-tunnel').selectedIndex === 1;
+    $('pv-newname-wrap').style.display = isNew ? '' : 'none';
+  }
+  function runProvision() {
+    var sub = $('pv-sub').value.trim();
+    if (!sub) { toast('请输入子域名前缀'); return; }
+    var host = sub + '.' + $('pv-zone').value;
+    var isNew = $('pv-tunnel').selectedIndex === 1;
+    var wss = $('pv-wss').checked;
+    var steps = [
+      isNew ? ['创建隧道 ' + $('pv-newname').value, '远程托管配置模式'] : ['选用当前隧道 adbcontrol', '保留已有 2 个主机名'],
+      ['配置入口 (ingress)', '追加 ' + host + ' → http://localhost:' + $('pv-port').value + (isNew ? '' : '（合并，不覆盖）')],
+      ['绑定 DNS 路由', '已创建 ' + host + ' 的隧道 CNAME（自动双栈 A/AAAA）']
+    ];
+    if (wss) steps.push(['开启 MQTT over WSS 通道', '/mqtt → EMQX :8084']);
+    var box = $('pv-steps');
+    box.innerHTML = '';
+    box.classList.add('show');
+    $('pv-err').classList.remove('show');
+    $('pv-ok').classList.remove('show');
+    $('pv-cmd').classList.remove('show');
+    $('pv-run').disabled = true;
+    var i = 0;
+    (function next() {
+      if (i < steps.length) {
+        var d = document.createElement('div');
+        d.className = 'step ok';
+        d.innerHTML = '<span class="mark">✓</span><span class="name">' + steps[i][0] + '</span><span class="detail">' + steps[i][1] + '</span>';
+        box.appendChild(d);
+        i++;
+        setTimeout(next, 550);
+      } else {
+        $('pv-ok').textContent = '穿透绑定成功：https://' + host + ' 已指向本地端口 ' + $('pv-port').value;
+        $('pv-ok').classList.add('show');
+        $('pv-cmd').classList.add('show');
+        $('pv-run').disabled = false;
+        toast('演示完成：真实实现将自动刷新绑定状态');
+      }
+    })();
+  }
+
+  /* 更换地址 */
+  function pickUrl(u) { $('url-input').value = u; }
+  function saveUrl() {
+    var v = $('url-input').value.trim();
+    if (!/^https?:\/\/.+/.test(v)) { toast('地址必须以 http:// 或 https:// 开头'); return; }
+    var host = v.replace(/^https?:\/\//, '').split('/')[0];
+    if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host)) {
+      toast('不允许内网 / 环回 / 保留地址'); return;
+    }
+    closeModal('modal-url');
+    toast('已保存对外地址：' + v);
+  }
+
+  function copyText(btn) {
+    var text = btn.parentElement.textContent.replace('复制', '').trim();
+    try { navigator.clipboard.writeText(text); } catch (e) {}
+    toast('已复制到剪贴板');
+  }
+</script>
+</body>
+</html>
