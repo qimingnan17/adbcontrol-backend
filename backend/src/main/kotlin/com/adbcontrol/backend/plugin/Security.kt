@@ -34,15 +34,13 @@ fun Application.configureSecurity(db: DatabaseService) {
                 org.apache.commons.codec.binary.Hex.encodeHexString(tmp)
             }
         cookie<UserSession>("ADB_SESSION") {
-            // 跨站部署(前端 *.workers.dev / *.pages.dev,后端 *.fly.dev)时,浏览器只在
-            // SameSite=None; Secure 的前提下才会保存并回传 session cookie。默认按跨站场景配置;
-            // 本地纯 http 开发可通过 SESSION_SAMESITE=Lax + SESSION_SECURE=false 覆盖。
-            val sameSite = config.propertyOrNull("session.same_site")?.getString()?.takeIf { it.isNotBlank() } ?: "None"
-            // SameSite=None 必须搭配 Secure,否则浏览器直接丢弃该 cookie。
+            // 同源托管与 Tailscale HTTP 部署场景下,SameSite 默认 Lax,secure 默认 false;
+            // 允许在 http://100.x.x.x 等内网环境下正常存储和携带会话 Cookie。
+            val sameSite = config.propertyOrNull("session.same_site")?.getString()?.takeIf { it.isNotBlank() } ?: "Lax"
             val secure = if (sameSite.equals("None", ignoreCase = true)) {
                 true
             } else {
-                config.propertyOrNull("session.secure")?.getString().toBoolean()
+                config.propertyOrNull("session.secure")?.getString()?.toBoolean() ?: false
             }
             cookie.path = "/"
             cookie.httpOnly = true

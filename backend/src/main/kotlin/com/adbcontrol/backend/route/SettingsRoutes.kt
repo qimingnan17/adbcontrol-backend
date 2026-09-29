@@ -50,20 +50,21 @@ private suspend fun ApplicationCall.ensureTailscaleOrLocal(): Boolean {
 }
 
 fun Route.settingsRoutes(settingsService: SettingsService) {
+    // 网络模式检查：诊断探针无需强制会话，方便前端未登录或初始化时也能判断网络环境
+    get("/api/admin/settings/network") {
+        val isTailscale = NetworkSecurity.isLocalOrTailscale(call)
+        val clientIp = NetworkSecurity.getClientIp(call)
+        call.respond(
+            mapOf(
+                "isTailscale" to isTailscale,
+                "clientIp" to clientIp,
+                "tip" to if (isTailscale) "Tailscale / Localhost 安全内网" else "Cloudflare / 公网访问（配置功能受限）"
+            )
+        )
+    }
+
     authenticate("auth-session") {
         route("/api/admin/settings") {
-            // 网络模式检查：前端调用以展示当前网络提示
-            get("/network") {
-                val isTailscale = NetworkSecurity.isLocalOrTailscale(call)
-                val clientIp = NetworkSecurity.getClientIp(call)
-                call.respond(
-                    mapOf(
-                        "isTailscale" to isTailscale,
-                        "clientIp" to clientIp,
-                        "tip" to if (isTailscale) "Tailscale / Localhost 安全内网" else "Cloudflare / 公网访问（配置功能受限）"
-                    )
-                )
-            }
 
             // 读取脱敏配置
             get("/secrets") {
