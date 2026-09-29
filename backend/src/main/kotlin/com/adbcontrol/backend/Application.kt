@@ -6,6 +6,7 @@ import com.adbcontrol.backend.plugin.configureSecurity
 import com.adbcontrol.backend.route.adminRoutes
 import com.adbcontrol.backend.route.authRoutes
 import com.adbcontrol.backend.route.settingsRoutes
+import com.adbcontrol.backend.route.webAppRoutes
 import com.adbcontrol.backend.routes.emqxRoutes
 import com.adbcontrol.backend.routes.healthRoutes
 import com.adbcontrol.backend.routes.pairingRoutes
@@ -142,6 +143,9 @@ fun Application.module() {
         authenticate("auth-session") {
             emqxRoutes(emqxProxy)
         }
+
+        // 静态 Web 前端单页应用托管 (SPA 模式: 首页及路由页面自动回退至 index.html)
+        webAppRoutes()
     }
 
     appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /api/admin/settings, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions")
