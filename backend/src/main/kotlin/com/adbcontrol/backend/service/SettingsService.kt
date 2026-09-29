@@ -1,6 +1,7 @@
 package com.adbcontrol.backend.service
 
 import com.adbcontrol.backend.config.BackendConfig
+import com.adbcontrol.backend.model.*
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
@@ -53,7 +54,7 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
     /**
      * 读取配置并进行安全脱敏。
      */
-    fun readMaskedSecrets(): Map<String, Any> {
+    fun readMaskedSecrets(): SecretsResponse {
         val file = getSecretsFile()
         val props = Properties()
         if (file.exists() && file.canRead()) {
@@ -74,39 +75,39 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         val dbPwd = props.getProperty("db.password", "")
         val pmTok = props.getProperty("pm.token", "")
 
-        return mapOf(
-            "filePath" to file.absolutePath,
-            "exists" to file.exists(),
-            "r2" to mapOf(
-                "endpoint" to props.getProperty("r2.endpoint", config.r2Endpoint),
-                "bucket" to props.getProperty("r2.bucket", config.r2Bucket),
-                "accessKey" to props.getProperty("r2.access_key", config.r2AccessKey),
-                "accessSecret" to maskSecret(r2Secret.ifEmpty { config.r2AccessSecret }),
-                "hasSecret" to (r2Secret.isNotBlank() || config.r2AccessSecret.isNotBlank()),
+        return SecretsResponse(
+            filePath = file.absolutePath,
+            exists = file.exists(),
+            r2 = R2Secrets(
+                endpoint = props.getProperty("r2.endpoint", config.r2Endpoint),
+                bucket = props.getProperty("r2.bucket", config.r2Bucket),
+                accessKey = props.getProperty("r2.access_key", config.r2AccessKey),
+                accessSecret = maskSecret(r2Secret.ifEmpty { config.r2AccessSecret }),
+                hasSecret = (r2Secret.isNotBlank() || config.r2AccessSecret.isNotBlank()),
             ),
-            "emqx" to mapOf(
-                "host" to props.getProperty("emqx.host", config.emqxHost),
-                "port" to props.getProperty("emqx.port", config.emqxPort.toString()),
-                "appId" to props.getProperty("emqx.appid", config.emqxAppId),
-                "restEndpoint" to props.getProperty("emqx.rest_endpoint", config.emqxRestEndpoint),
-                "appSecret" to maskSecret(emqxSecret.ifEmpty { config.emqxAppSecret }),
-                "hasAppSecret" to (emqxSecret.isNotBlank() || config.emqxAppSecret.isNotBlank()),
-                "ingestUsername" to props.getProperty("emqx.ingest_username", config.emqxIngestUsername),
-                "ingestPassword" to maskSecret(emqxIngestPwd.ifEmpty { config.emqxIngestPassword }),
-                "hasIngestPassword" to (emqxIngestPwd.isNotBlank() || config.emqxIngestPassword.isNotBlank()),
+            emqx = EmqxSecrets(
+                host = props.getProperty("emqx.host", config.emqxHost),
+                port = props.getProperty("emqx.port", config.emqxPort.toString()),
+                appId = props.getProperty("emqx.appid", config.emqxAppId),
+                restEndpoint = props.getProperty("emqx.rest_endpoint", config.emqxRestEndpoint),
+                appSecret = maskSecret(emqxSecret.ifEmpty { config.emqxAppSecret }),
+                hasAppSecret = (emqxSecret.isNotBlank() || config.emqxAppSecret.isNotBlank()),
+                ingestUsername = props.getProperty("emqx.ingest_username", config.emqxIngestUsername),
+                ingestPassword = maskSecret(emqxIngestPwd.ifEmpty { config.emqxIngestPassword }),
+                hasIngestPassword = (emqxIngestPwd.isNotBlank() || config.emqxIngestPassword.isNotBlank()),
             ),
-            "server" to mapOf(
-                "url" to props.getProperty("server.url", config.serverUrl),
-                "pmToken" to maskSecret(pmTok.ifEmpty { config.pmToken }),
-                "hasPmToken" to (pmTok.isNotBlank() || config.pmToken.isNotBlank()),
+            server = ServerSecrets(
+                url = props.getProperty("server.url", config.serverUrl),
+                pmToken = maskSecret(pmTok.ifEmpty { config.pmToken }),
+                hasPmToken = (pmTok.isNotBlank() || config.pmToken.isNotBlank()),
             ),
-            "db" to mapOf(
-                "host" to props.getProperty("db.host", config.dbHost),
-                "port" to props.getProperty("db.port", config.dbPort.toString()),
-                "name" to props.getProperty("db.name", config.dbName),
-                "user" to props.getProperty("db.user", config.dbUser),
-                "password" to maskSecret(dbPwd.ifEmpty { config.dbPassword }),
-                "hasPassword" to (dbPwd.isNotBlank() || config.dbPassword.isNotBlank()),
+            db = DbSecrets(
+                host = props.getProperty("db.host", config.dbHost),
+                port = props.getProperty("db.port", config.dbPort.toString()),
+                name = props.getProperty("db.name", config.dbName),
+                user = props.getProperty("db.user", config.dbUser),
+                password = maskSecret(dbPwd.ifEmpty { config.dbPassword }),
+                hasPassword = (dbPwd.isNotBlank() || config.dbPassword.isNotBlank()),
             )
         )
     }
