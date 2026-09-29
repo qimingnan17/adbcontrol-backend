@@ -92,6 +92,7 @@ curl -s http://localhost:8080/health
    - 填写管理员用户名（3-32 位）和密码（至少 8 位），点击“初始化并进入控制台”；
    - 后端在 `admin_user` 表中创建唯一管理员记录并自动建立登录状态。
 3. 登录成功后进入 **仪表盘（Dashboard）**。
+4. **SSO 免密登录（可选）**：除账号密码外，登录页还支持三种 Cloudflare 登录方式——Zero Trust Access 头探测一键登录、API Token 校验登录、OIDC 官方账号跳转登录；配置方法见 [DEPLOY.md 第 7 章](DEPLOY.md#第-7-章-cloudflare-集成sso-登录与云资源绑定)。若管理员尚未初始化，SSO 登录会以登录身份自动创建初始管理员。
 
 ---
 
