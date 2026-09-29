@@ -117,7 +117,8 @@ data class BackendConfig(
         private const val DEFAULT_DB_USER = "slss12"
 
         /** secrets.properties 候选路径(相对工作目录逐级向上,直至项目根)。 */
-        private val SECRET_CANDIDATES: List<String> = listOf(
+        internal val SECRET_CANDIDATES: List<String> = listOf(
+            "C:\\adbcontrol\\secrets.properties",
             "secrets.properties",
             "../secrets.properties",
             "../../secrets.properties",

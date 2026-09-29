@@ -5,6 +5,7 @@ import com.adbcontrol.backend.plugin.configureCors
 import com.adbcontrol.backend.plugin.configureSecurity
 import com.adbcontrol.backend.route.adminRoutes
 import com.adbcontrol.backend.route.authRoutes
+import com.adbcontrol.backend.route.settingsRoutes
 import com.adbcontrol.backend.routes.emqxRoutes
 import com.adbcontrol.backend.routes.healthRoutes
 import com.adbcontrol.backend.routes.pairingRoutes
@@ -15,6 +16,7 @@ import com.adbcontrol.backend.service.DatabaseService
 import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.EmqxProxyService
 import com.adbcontrol.backend.service.PairingService
+import com.adbcontrol.backend.service.SettingsService
 import com.adbcontrol.backend.service.TaskSchedulerService
 import com.adbcontrol.backend.service.TelemetryIngestService
 import com.adbcontrol.backend.service.UpdateService
@@ -96,6 +98,7 @@ fun Application.module() {
     // PairingService 依赖 emqxProxy:配对时经部署 API 动态注册设备 MQTT 账号
     val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
     val updateService = UpdateService(config, databaseService)
+    val settingsService = SettingsService(config)
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
@@ -106,6 +109,7 @@ fun Application.module() {
 
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
+        settingsService.close()
         taskScheduler.close()
         telemetryIngest.close()
         emqxProxy.close()
@@ -128,6 +132,7 @@ fun Application.module() {
         authRoutes(databaseService)
         // 受 auth 保护的 admin 路由放在 authenticate 块里(由 AdminRoutes.kt 内部 authenticate("auth-session") 控制)
         adminRoutes(databaseService, pairingService, commandBridge)
+        settingsRoutes(settingsService)
         pairingRoutes(pairingService)
         updateRoutes(updateService, commandBridge)
         // APK 下载中转:/update/apk?url=<GitHub Release 链接>(check 响应里的直链会被改写指向这里)
@@ -139,7 +144,7 @@ fun Application.module() {
         }
     }
 
-    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions")
+    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /api/admin/settings, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions")
 }
 
 /** 入口:由 Ktor Gradle 插件的 application.mainClass 指向,委托 Netty EngineMain 读取 application.conf。 */
