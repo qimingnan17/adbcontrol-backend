@@ -31,9 +31,14 @@
    - 内置高速 APK 代理接口 `/update/apk?url=...`，在设备端拉取 GitHub Release 遭遇国内网络阻断时充当透明下载中转源。
 6. **一体化 SPA 前端静态资源托管（[`WebAppRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/WebAppRoutes.kt)）**：
    - 优先挂载外部静态目录（`C:\adbcontrol\web` 或 `./web`），回退至 JAR 内置资源（`static/`）；
-   - 支持完整的 HTML5 History 路由回退，前端无需额外 Nginx 即可实现单服务一键全功能交付。
+   - 支持完整的 HTML5 History 路由回退，前端无需额外 Nginx 即可实现单服务一键全功能交付；
+   - 静态资源与 API 响应默认 **gzip 压缩**（`ktor-server-compression`），弱网下首屏关键资源体积由 ~1.66MB 降至 ~466KB（约 3.6×）。
 7. **Tailscale 零信任配置保护（[`SettingsRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/SettingsRoutes.kt) & [`NetworkSecurity`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/security/NetworkSecurity.kt)）**：
    - 敏感配置操作（查看/修改 EMQX 密码、MySQL 连接串、R2 密钥）通过网络守卫层，严格限定来自 Tailscale 虚拟专网（`100.64.0.0/10`）或本地回环（`127.0.0.1`），杜绝公网直接暴露风险。
+8. **Cloudflare 云资源集成与 SSO 登录（[`CloudflareService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareService.kt)）**：
+   - 支持三种免密/少密登录方式：Cloudflare Zero Trust (Access) 请求头探测登录、API Token 校验登录、Zero Trust OIDC 授权码跳转登录；
+   - 凭借 Cloudflare API Token 自动发现账户下全部资源（Access 组织、域名 Zones、Tunnels 隧道、R2 存储桶、D1 数据库）；
+   - 资源发现为**只读**（列出账户下有什么，不写配置）；所有绑定均为**逐个手动**确认（隧道域名 → `server.url`、R2 桶 → 截图存储、D1 → 数据库绑定），避免自动绑错资源，绑定结果持久化至 `secrets.properties`。
 
 ---
 
@@ -107,6 +112,14 @@ adbcontrol-backend/
 | `ADB_R2_BUCKET` | `r2.bucket` | `slss-boby` | 存储截图与日志的 R2 存储桶名 |
 | `ADB_R2_ACCESS_KEY` | `r2.access_key` | *(必填敏感项)* | R2 API Token AccessKey |
 | `ADB_R2_ACCESS_SECRET`| `r2.access_secret`| *(必填敏感项)* | R2 API Token AccessSecret |
+| —（仅文件键） | `cf.api_token` | *(可选敏感项)* | Cloudflare API Token（资源发现/绑定与 Token 登录使用，可经 Web 设置页写入） |
+| —（仅文件键） | `cf.team_domain` | *(可选)* | Cloudflare Zero Trust 团队域名（如 `xxx.cloudflareaccess.com`，OIDC 登录依赖） |
+| —（仅文件键） | `cf.oidc_client_id` | *(可选)* | Zero Trust OIDC 登录应用 Client ID |
+| —（仅文件键） | `cf.oidc_client_secret` | *(可选敏感项)* | Zero Trust OIDC 登录应用 Client Secret |
+| —（仅文件键） | `cf.oidc_redirect_uri` | *(可选)* | 自定义 OIDC 回调地址（缺省为 `<站点>/api/auth/cf-oidc/callback`） |
+| `ADB_D1_DATABASE_ID` | `d1.database_id` | *(可选)* | 绑定的 Cloudflare D1 数据库 UUID |
+| `ADB_D1_DATABASE_NAME` | `d1.database_name` | *(可选)* | 绑定的 D1 数据库名称 |
+| `ADB_D1_ACCOUNT_ID` | `d1.account_id` | *(可选)* | D1 所属 Cloudflare Account ID |
 | `SESSION_SECRET` | `session.secret` | *(自动或 64 字节随机串)* | 用于 Ktor Session Cookie 签名的密钥 |
 
 ---
@@ -152,6 +165,13 @@ adbcontrol-backend/
 - `GET /api/me`：获取当前登录管理员身份及权限。
 - `POST /api/logout`：注销当前会话。
 
+### Cloudflare SSO 登录
+- `GET /api/auth/cf-access`：探测请求是否携带 Cloudflare Zero Trust (Access) 认证头 `Cf-Access-Authenticated-User-Email`（经 Cloudflare Tunnel + Access 保护时注入），命中时前端可提示一键免密登录。
+- `POST /api/auth/cf-access-login`：基于 Access 认证头免密登录；若系统尚未初始化管理员，将以认证邮箱自动创建初始管理员。
+- `POST /api/auth/cf-token-login`：凭 Cloudflare API Token 登录——校验 Token 有效性后发放管理员会话，并自动将 Token 保存至 `cf.api_token`（独立 IP 限流）。
+- `GET /api/auth/cf-oidc/authorize-url`：获取 Zero Trust OIDC 授权跳转地址（需已配置 `cf.team_domain` 与 `cf.oidc_client_id`；带 `state` 防 CSRF，10 分钟有效期）。
+- `GET /api/auth/cf-oidc/callback`：OIDC 授权码回调端点——置换身份（userinfo 接口优先、id_token JWT 兜底）后建立管理员会话并跳回前端 `/dashboard`；若管理员未初始化则按邮箱自动创建。
+
 ### 业务与设备管理
 - `GET /api/devices`：查询已注册设备清单及最新在线状态与电量。
 - `GET /api/devices/{deviceId}/status`：查询单台设备详细遥测数据（网络、前台应用、权限等）。
@@ -173,10 +193,21 @@ adbcontrol-backend/
 
 ### 安全设置（仅限 Tailscale / 本地访问）
 - `GET /api/admin/settings/network`：网络诊断探针，返回当前访问 IP 及是否判定为 Tailscale 授信内网。
-- `GET /api/admin/settings`：获取当前云端脱敏配置信息。
+- `GET /api/admin/settings`：获取当前云端脱敏配置信息（含 `cf` Cloudflare 凭据、`d1` D1 绑定状态区块）。
 - `POST /api/admin/settings`：更新系统敏感凭据（EMQX、MySQL、R2），支持热重启后端进程。
 - `POST /api/admin/settings/test-emqx`：即时测试 EMQX 凭据有效性。
 - `POST /api/admin/settings/test-r2`：即时测试 R2 读写连通性。
+
+### Cloudflare 资源发现与绑定（仅限 Tailscale / 本地，或具备管理员会话；挂载于 `/api/admin/settings` 下）
+- `POST /cloudflare/sync`：**只读**同步 Cloudflare 资源——校验 Token 并拉取账户、Access 组织、域名 Zones、Tunnels、R2 桶、D1 数据库全量清单；Token 与团队域名自动持久化，**不写入任何绑定**。
+- `GET /cloudflare/bindings`：查询当前云端资产绑定状态（服务地址/隧道、R2 桶、D1 数据库是否已绑定及具体值）。
+- `POST /cloudflare/provision-tunnel`：隧道穿透绑定——建/选隧道 → **合并**写入 ingress（不覆盖已有主机名）→ 绑定 DNS 路由 → 写回 `server.url`；可选 `enableMqttWss` 同时追加 `/mqtt → EMQX:8084` 入口，返回逐步结果与连接器命令。
+- `POST /cloudflare/create-tunnel`：新建远程托管隧道（仅建隧道，不含入口规则）。
+- `POST /cloudflare/auto-bind` / `POST /cloudflare/manual-bind`：一键 / 批量绑定端点（**保留兼容**，Web 设置页已不再调用，改为逐项手动绑定）。
+- `POST /cloudflare/apply-tunnel`：将指定隧道域名应用为系统服务地址（`server.url`）。
+- `POST /cloudflare/apply-r2`：将指定 R2 Endpoint/Bucket/密钥应用为截图存储配置。
+- `POST /cloudflare/apply-oidc`：保存 Zero Trust OIDC 登录配置（团队域名、Client ID/Secret、自定义回调）。
+- `POST /cloudflare/apply-d1`：绑定指定 D1 数据库（Database ID / 名称 / Account ID）。
 
 ### 升级与代理通道
 - `GET /update/check`：受控端版本更新检测接口。
