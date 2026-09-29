@@ -136,3 +136,47 @@ cd ../adbcontrol-backend && ./gradlew :backend:run     # 或 :backend:distZip / 
 2. **隧道已绑主机名列表**：`CfTunnel` 模型暂无 `hostnames` 字段，「对外服务地址」卡未展示全部主机名；如需展示需后端补接口。
 3. **总览为配置状态**：非实时探活（EMQX / DB 无健康检查接口）；如需真实健康度需后端新增探活接口。
 4. **MQTT 双通道自动优选（受控端）**：本次仅落地隧道侧 `/mqtt` 入口；受控端 `MqttManager` 的双路探测 / 自动切换为独立工作项（原型勾选项对应后端已就绪，受控端待做）。
+
+---
+
+## 八、弱网首屏优化（响应压缩）
+
+### 8.1 问题
+
+部署后在测试环境 `http://100.91.103.13:8080/` 访问超时。排查结论：
+
+- 后端与前端的接口均正常（`/api/health`、`/` 均 200）；
+- 由 `WebAppRoutes` 直接 `respondBytes` 返回静态资源，**未开启任何响应压缩**；
+- 首屏需下载约 **1.66 MB** 未压缩 JS/CSS，而该链路实测吞吐仅 ~25–35 KB/s（Tailscale / 云电脑上行受限），906 KB 的 `element-plus` chunk 需 26s+，浏览器直接超时；
+- 本次部署更换了资源哈希名，浏览器强缓存（`immutable`）失效，首屏必然全量重下，把问题放大。
+
+### 8.2 修复
+
+在 `Application.kt` 安装 Ktor `Compression` 插件（并新增 `ktor-server-compression-jvm` 依赖）：
+
+```kotlin
+install(Compression) {
+    gzip { priority = 1.0; minimumSize(1024) }
+    deflate { priority = 0.5; minimumSize(1024) }
+}
+```
+
+### 8.3 效果
+
+| 资源 | 原始 | gzip 后 |
+| --- | --- | --- |
+| element-plus | 905,976 | 292,885 |
+| element-icons | 170,963 | 44,285 |
+| vue-vendor | 108,684 | 42,694 |
+| index.css | 363,768 | 49,084 |
+| index.js | 61,581 | 23,748 |
+| Settings.js | 47,193 | 13,479 |
+| **首屏关键资源合计** | **1,658,165** | **466,175（约 3.6×）** |
+
+本地验证：带 `Accept-Encoding: gzip` 请求返回 `Content-Encoding: gzip`，不带时返回原始 `Content-Length`。
+
+### 8.4 后续建议
+
+- 链路 ~30 KB/s 仍属异常（正常 Tailscale 直连应达 MB/s 级），建议在云电脑执行 `tailscale status` / `tailscale ping` 确认是否走了 DERP 中继而非直连；
+- 如需进一步缩小首屏，可考虑按需引入 Element Plus 组件（现状整库打进 `element-plus` 单 chunk）；
+- 压gzip 后尚未附加 `Vary: Accept-Encoding`（Ktor 插件未自动加），如有共享缓存/CDN 场景需手动补上。
