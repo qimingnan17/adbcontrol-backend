@@ -121,7 +121,11 @@ private suspend fun ApplicationCall.forwardApk(parsed: HttpUrl, headOnly: Boolea
     request.headers[HttpHeaders.Range]?.let { builder.header(HttpHeaders.Range, it) }
 
     logger.info("apk proxy {} {}", if (headOnly) "HEAD" else "GET", parsed.host)
-    val upstream = runCatching { apkProxyClient.newCall(builder.build()).execute() }.getOrElse {
+    val upstream = runCatching {
+        withContext(Dispatchers.IO) {
+            apkProxyClient.newCall(builder.build()).execute()
+        }
+    }.getOrElse {
         logger.warn("apk proxy upstream connect failed: {}", it.message)
         respond(HttpStatusCode.BadGateway, ProxyError("upstream unreachable"))
         return

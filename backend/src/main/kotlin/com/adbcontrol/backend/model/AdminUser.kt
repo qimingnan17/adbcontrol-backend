@@ -11,6 +11,7 @@ data class AdminUser(
     val role: String = "admin",
     val createdAt: Long = 0L,
     val lastLoginAt: Long = 0L,
+    val passwordChangedAt: Long = 0L,
     val totpSecret: String? = null
 )
 

@@ -11,7 +11,14 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 @Serializable
-data class UserSession(val adminId: Int, val username: String, val role: String)
+data class UserSession(
+    val adminId: Int,
+    val username: String,
+    val role: String,
+    /** 会话签发时间(epochMilli)。validate 时与 DB 的 password_changed_at 比对:
+     *  改密后所有早于该时刻的会话全部失效(服务端吊销),旧 cookie 无此字段按 0 处理。 */
+    val iat: Long = 0L,
+)
 
 /**
  * 使用"带签名的会话 Cookie + 内存 session store"两层方案:
@@ -24,15 +31,16 @@ private fun hmacSha256Key(seed: String): ByteArray {
     return MessageDigest.getInstance("SHA-256").digest(seed.toByteArray(Charsets.UTF_8))
 }
 
-fun Application.configureSecurity(db: DatabaseService) {
+fun Application.configureSecurity(db: DatabaseService, sessionSecret: String) {
     val env = environment
     val config = env.config
     install(Sessions) {
-        val seed = config.propertyOrNull("session.secret")?.getString()
-            ?: run {
-                val tmp = ByteArray(48).also { SecureRandom().nextBytes(it) }
-                org.apache.commons.codec.binary.Hex.encodeHexString(tmp)
-            }
+        // 密钥由 Application 启动时解析(环境 > secrets.properties > 生成并持久化),
+        // 不再每次进程启动随机——否则每次重启全部管理员会话失效被踢回登录页(实测问题)。
+        val seed = sessionSecret.ifBlank {
+            val tmp = ByteArray(48).also { SecureRandom().nextBytes(it) }
+            org.apache.commons.codec.binary.Hex.encodeHexString(tmp)
+        }
         cookie<UserSession>("ADB_SESSION") {
             // 同源托管与 Tailscale HTTP 部署场景下,SameSite 默认 Lax,secure 默认 false;
             // 允许在 http://100.x.x.x 等内网环境下正常存储和携带会话 Cookie。
@@ -53,7 +61,11 @@ fun Application.configureSecurity(db: DatabaseService) {
     install(Authentication) {
         session<UserSession>("auth-session") {
             validate { session ->
-                db.findAdminByUsername(session.username)?.let {
+                // 会话状态以 DB 为准:用户被删/角色被改/改密前签发的会话一律拒绝。
+                // 此前只查 username 存在,role 完全信任 cookie,改密也不吊销旧会话(实测问题)。
+                db.findAdminByUsername(session.username)?.takeIf { admin ->
+                    admin.role == session.role && session.iat >= admin.passwordChangedAt
+                }?.let {
                     UserIdPrincipal(session.username)
                 }
             }

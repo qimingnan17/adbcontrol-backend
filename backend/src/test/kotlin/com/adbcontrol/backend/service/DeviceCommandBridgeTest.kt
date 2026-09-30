@@ -27,7 +27,7 @@ class DeviceCommandBridgeTest {
         val config = BackendConfig.load()
         val db = DatabaseService(config)      // 缺 DB 连接时 best-effort,不会真正连库
         val emqx = EmqxProxyService(config)
-        val pairing = PairingService(config, AclService(config), db, emqx)
+        val pairing = PairingService(config, AclService(config, emqx), db, emqx)
         return DeviceCommandBridge(pairing, emqx)
     }
 

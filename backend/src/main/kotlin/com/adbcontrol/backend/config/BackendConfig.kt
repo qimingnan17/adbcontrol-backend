@@ -34,6 +34,9 @@ data class BackendConfig(
     val emqxBrokerWsPort: Int = 8084,
     /** WS 路径,EMQX 默认 /mqtt。 */
     val emqxBrokerWsPath: String = "/mqtt",
+    /** WS 模式设备是否用 wss:经 CF 隧道填 true(TLS 在 CF 边缘终结,设备连 443);
+     *  自部署明文 ws 场景填 false。此前硬编码 useTls=true,明文 ws 部署必然握手失败。 */
+    val emqxBrokerWsTls: Boolean = true,
     val r2Endpoint: String,
     val r2Bucket: String,
     val r2AccessKey: String,
@@ -43,6 +46,9 @@ data class BackendConfig(
     val dbName: String,
     val dbUser: String,
     val dbPassword: String,
+    /** 远程 MySQL TLS 是否校验服务端证书。默认 false 保持历史兼容;
+     *  公网托管库建议置 true(需库端证书受 JVM 默认信任库信任)。 */
+    val dbSslVerify: Boolean = false,
     /** 遥测 ingestor 使用的 MQTT 账号(运维在 EMQX 控制台手工创建一次,非代码自注册)。 */
     val emqxIngestUsername: String = "",
     val emqxIngestPassword: String = "",
@@ -58,7 +64,7 @@ data class BackendConfig(
         host = emqxHost,
         // WS 模式下设备连的是 WS 监听端口,而非裸 TCP TLS 端口
         port = if (emqxBrokerWs) emqxBrokerWsPort else emqxPort,
-        useTls = true,
+        useTls = if (emqxBrokerWs) emqxBrokerWsTls else true,
         appid = emqxAppId,
         username = username,
         password = password,
@@ -91,8 +97,14 @@ data class BackendConfig(
             name = dbName,
             user = dbUser,
             password = dbPassword,
+            sslVerify = buildDbSslVerify(),
         )
     }
+
+    /** 远程库 TLS 证书校验开关:env > secrets.properties,默认 false 保持历史兼容。 */
+    private fun buildDbSslVerify(): Boolean =
+        System.getenv("ADB_DB_SSL_VERIFY")?.equals("true", ignoreCase = true)
+            ?: false
 
     /** Bug#19:校验关键凭证是否就绪,返回缺失凭证的描述列表(空列表表示全部就绪)。 */
     fun validate(): List<String> {
@@ -173,6 +185,7 @@ data class BackendConfig(
                 emqxBrokerWs = getBool("ADB_EMQX_BROKER_WS", "emqx.broker_ws", false),
                 emqxBrokerWsPort = getInt("ADB_EMQX_BROKER_WS_PORT", "emqx.broker_ws_port", 8084),
                 emqxBrokerWsPath = get("ADB_EMQX_BROKER_WS_PATH", "emqx.broker_ws_path", "/mqtt"),
+                emqxBrokerWsTls = getBool("ADB_EMQX_BROKER_WS_TLS", "emqx.broker_ws_tls", true),
                 r2Endpoint = get("ADB_R2_ENDPOINT", "r2.endpoint", DEFAULT_R2_ENDPOINT),
                 r2Bucket = get("ADB_R2_BUCKET", "r2.bucket", DEFAULT_R2_BUCKET),
                 r2AccessKey = get("ADB_R2_ACCESS_KEY", "r2.access_key", ""),

@@ -39,6 +39,15 @@
    - 支持三种免密/少密登录方式：Cloudflare Zero Trust (Access) 请求头探测登录、API Token 校验登录、Zero Trust OIDC 授权码跳转登录；
    - 凭借 Cloudflare API Token 自动发现账户下全部资源（Access 组织、域名 Zones、Tunnels 隧道、R2 存储桶、D1 数据库）；
    - 资源发现为**只读**（列出账户下有什么，不写配置）；所有绑定均为**逐个手动**确认（隧道域名 → `server.url`、R2 桶 → 截图存储、D1 → 数据库绑定），避免自动绑错资源，绑定结果持久化至 `secrets.properties`。
+9. **全双工 SSE 实时事件流（[`RealtimeEventService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/RealtimeEventService.kt) & [`RealtimeRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/RealtimeRoutes.kt)）**：
+   - 提供 `/api/events` Server-Sent Events 端点，实现毫秒级事件推送；
+   - 涵盖设备心跳与电量网络 (`device_status`)、设备掉线 (`device_offline`)、指令执行结果 (`command_result`)、任务栏通知签收回报 (`reminder_ack`)，配合前端实现零等待响应。
+10. **自适应配对二维码与动态 Origin 检测（[`PairingService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/PairingService.kt)）**：
+   - 生成配对令牌时，自动结合客户端请求来源（`X-Forwarded-Host` / `Host` / `Origin`）智能推导真实服务端外部访问地址；
+   - 彻底解决默认配置占位域名（`example.com`）导致移动端 App 扫码请求报错 `UnknownHostException` 的问题。
+11. **纯内存用户与凭据降级存储（[`DatabaseService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/DatabaseService.kt)）**：
+   - 在开发环境、CI 测试或轻量化部署未接入 MySQL 实例时，自动启用并发线程安全的内存用户管理与令牌存储，保障控制台登录、配对与鉴权全链路无阻断运行。
+
 
 ---
 

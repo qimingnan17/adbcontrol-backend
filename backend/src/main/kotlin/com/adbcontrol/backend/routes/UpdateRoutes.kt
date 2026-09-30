@@ -11,7 +11,7 @@ import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
-import io.ktor.server.routing.Routing
+import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
@@ -30,7 +30,7 @@ private data class Ack(val status: String, val message: String = "")
  * - POST /api/updates/publish(CI/Web 发布入口):X-Admin-Token 鉴权,发布新版本
  *   并向全部已配对设备广播 update_available 推送。
  */
-fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBridge) {
+fun Route.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBridge) {
     get("/update/check") {
         val deviceId = call.request.queryParameters["deviceId"]
         val currentVersionCode = call.request.queryParameters["currentVersionCode"]?.toIntOrNull()
@@ -46,7 +46,7 @@ fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBri
         // GitHub 直链改写为后端中转链接:被控端(尤其国内网络)直连/公共代理下载大文件
         // 常被中间设备掐断(HEAD 能通、传输中断),OTA 反复失败。旧版 App 对非 GitHub
         // 域名直接走普通 HTTP 下载,天然兼容 —— 无需升级即可受益。
-        call.respond(call.withProxiedApkUrls(service.check(deviceId, currentVersionCode, channel)))
+        call.respond(call.withProxiedApkUrls(service, service.check(deviceId, currentVersionCode, channel)))
     }
 
     post("/update/report") {
@@ -113,17 +113,17 @@ fun Routing.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBri
 }
 
 /** 把响应中的 GitHub 直链(full/patch)改写为 `{本机}/update/apk?url=` 中转链接。 */
-private fun ApplicationCall.withProxiedApkUrls(resp: UpdateCheckResponse): UpdateCheckResponse =
+private fun ApplicationCall.withProxiedApkUrls(service: UpdateService, resp: UpdateCheckResponse): UpdateCheckResponse =
     resp.copy(
-        fullApkUrl = resp.fullApkUrl?.let { proxiedIfGitHub(it) },
-        patchUrl = resp.patchUrl?.let { proxiedIfGitHub(it) },
+        fullApkUrl = resp.fullApkUrl?.let { proxiedIfGitHub(service, it) },
+        patchUrl = resp.patchUrl?.let { proxiedIfGitHub(service, it) },
     )
 
-private fun ApplicationCall.proxiedIfGitHub(url: String): String {
+private fun ApplicationCall.proxiedIfGitHub(service: UpdateService, url: String): String {
     val host = runCatching { url.toHttpUrlOrNull()?.host?.lowercase() }
         .getOrNull() ?: return url
     if (host !in APK_PROXY_ALLOWED_HOSTS) return url
-    return "${selfOriginPrefix()}/update/apk?url=" + URLEncoder.encode(url, "UTF-8")
+    return "${selfOriginPrefix(service)}/update/apk?url=" + URLEncoder.encode(url, "UTF-8")
 }
 
 /**
@@ -133,7 +133,12 @@ private fun ApplicationCall.proxiedIfGitHub(url: String): String {
  *   fly.dev → https://adbcontrol-backend.fly.dev,本地开发 → http://localhost:8080。
  * - HTTP/1.1 起 Host 为必带头,缺失视为非法请求直接报错兜底。
  */
-private fun ApplicationCall.selfOriginPrefix(): String {
+private fun ApplicationCall.selfOriginPrefix(service: UpdateService): String {
+    // 优先用配置的 server.url:设备直连源站时 Host 头可被攻击者注入,让设备拿到
+    // 指向第三方的 /update/apk 前缀(下载后虽有 manifest sha256 兜底,仍属加固点)。
+    // 未配置(仍是 example.com 占位)时回退请求头推导。
+    val configured = service.configuredServerUrl.trim().trimEnd('/')
+    if (configured.isNotBlank() && !configured.contains("example.com")) return configured
     val scheme = request.headers["X-Forwarded-Proto"]
         ?.substringBefore(",")?.trim()
         ?.takeIf { it.isNotBlank() }

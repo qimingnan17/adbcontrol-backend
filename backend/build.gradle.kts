@@ -60,6 +60,8 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    // 路由层回归测试(/emqx 鉴权绕过回归,见 EmqxRoutesAuthBypassTest)
+    testImplementation("io.ktor:ktor-server-test-host:${libs.versions.ktor.get()}")
 }
 
 tasks.withType<Test>().configureEach {

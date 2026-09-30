@@ -24,6 +24,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(javaClass)
     private val dbConfig: DbConfig? = config.buildDbConfig()
     @Volatile private var dataSource: HikariDataSource? = null
+    private val memoryAdmins = java.util.concurrent.ConcurrentHashMap<String, AdminUser>()
 
     init {
         if (dbConfig == null) {
@@ -46,7 +47,12 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                 val isLocal = cfg.host == "127.0.0.1" || cfg.host.equals("localhost", ignoreCase = true)
                 if (isLocal) {
                     append("&useSSL=false&allowPublicKeyRetrieval=true")
+                } else if (cfg.sslVerify) {
+                    append("&useSSL=true&verifyServerCertificate=true&allowPublicKeyRetrieval=false")
                 } else {
+                    // verifyServerCertificate=false 是"加密但不认证":可被中间人截获口令与
+                    // 数据(pair_session 表含 sessionKey 明文)。默认保持兼容,公网库建议
+                    // 设 ADB_DB_SSL_VERIFY=true / secrets.properties db.ssl_verify=true。
                     append("&useSSL=true&verifyServerCertificate=false&allowPublicKeyRetrieval=false")
                 }
                 append("&serverTimezone=Asia/Shanghai")
@@ -108,6 +114,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             "ALTER TABLE app_usage_daily ADD COLUMN app_name VARCHAR(128) NULL",
             "ALTER TABLE app_usage_daily ADD COLUMN icon_url VARCHAR(512) NULL",
             "ALTER TABLE task ADD COLUMN last_fired_at BIGINT NULL",
+            "ALTER TABLE admin_user ADD COLUMN password_changed_at BIGINT UNSIGNED NOT NULL DEFAULT 0",
         ).forEach { ddl ->
             runCatching {
                 ds.connection.use { conn -> conn.createStatement().use { it.execute(ddl) } }
@@ -272,9 +279,23 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
     }
 
     fun createAdmin(username: String, passwordPlain: String, role: String = "admin"): AdminUser {
-        val ds = dataSource ?: ensureDataSource() ?: error("DataSource unavailable")
         val now = System.currentTimeMillis()
         val passwordHash = PasswordHasher.hash(passwordPlain)
+        val ds = dataSource ?: ensureDataSource()
+        if (ds == null) {
+            val admin = AdminUser(
+                id = memoryAdmins.size + 1,
+                username = username,
+                passwordHash = passwordHash,
+                role = role,
+                createdAt = now,
+                lastLoginAt = 0L,
+                passwordChangedAt = now,
+                totpSecret = null
+            )
+            memoryAdmins[username] = admin
+            return admin
+        }
         val sql = """
             INSERT INTO admin_user (username, password_hash, role, created_at)
             VALUES (?, ?, ?, ?)
@@ -306,9 +327,9 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
     }
 
     fun findAdminByUsername(username: String): AdminUser? {
-        val ds = dataSource ?: ensureDataSource() ?: return null
+        val ds = dataSource ?: ensureDataSource() ?: return memoryAdmins[username]
         val sql = """
-            SELECT id, username, password_hash, role, created_at, last_login_at, totp_secret
+            SELECT id, username, password_hash, role, created_at, last_login_at, password_changed_at, totp_secret
             FROM admin_user WHERE username = ?
         """.trimIndent()
         return runCatching {
@@ -324,6 +345,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 role = rs.getString("role"),
                                 createdAt = rs.getLong("created_at"),
                                 lastLoginAt = rs.getLong("last_login_at"),
+                                passwordChangedAt = rs.getLong("password_changed_at"),
                                 totpSecret = rs.getString("totp_secret")
                             )
                         } else null
@@ -332,12 +354,16 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
         }.getOrElse {
             logger.warn("findAdminByUsername failed: {}", it.message)
-            null
+            memoryAdmins[username]
         }
     }
 
     fun updateAdminLastLogin(id: Int) {
-        val ds = dataSource ?: ensureDataSource() ?: return
+        val ds = dataSource ?: ensureDataSource() ?: run {
+            val existing = memoryAdmins.values.find { it.id == id } ?: return
+            memoryAdmins[existing.username] = existing.copy(lastLoginAt = System.currentTimeMillis())
+            return
+        }
         val now = System.currentTimeMillis()
         val sql = "UPDATE admin_user SET last_login_at = ? WHERE id = ?"
         runCatching {
@@ -353,7 +379,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
 
     fun listAdmins(): List<AdminUser> {
         val ds = dataSource ?: ensureDataSource() ?: return emptyList()
-        val sql = "SELECT id, username, role, created_at, last_login_at, totp_secret FROM admin_user ORDER BY id ASC"
+        val sql = "SELECT id, username, role, created_at, last_login_at, password_changed_at, totp_secret FROM admin_user ORDER BY id ASC"
         return runCatching {
             ds.connection.use { conn ->
                 conn.createStatement().use { stmt ->
@@ -367,6 +393,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 role = rs.getString("role"),
                                 createdAt = rs.getLong("created_at"),
                                 lastLoginAt = rs.getLong("last_login_at"),
+                                passwordChangedAt = rs.getLong("password_changed_at"),
                                 totpSecret = rs.getString("totp_secret")
                             )
                         }
@@ -376,13 +403,13 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
         }.getOrElse {
             logger.warn("listAdmins failed: {}", it.message)
-            emptyList()
+            memoryAdmins.values.map { it.copy(passwordHash = "") }
         }
     }
 
     fun getPrimaryAdmin(): AdminUser? {
-        val ds = dataSource ?: ensureDataSource() ?: return null
-        val sql = "SELECT id, username, password_hash, role, created_at, last_login_at, totp_secret FROM admin_user ORDER BY id ASC LIMIT 1"
+        val ds = dataSource ?: ensureDataSource() ?: return memoryAdmins.values.firstOrNull()
+        val sql = "SELECT id, username, password_hash, role, created_at, last_login_at, password_changed_at, totp_secret FROM admin_user ORDER BY id ASC LIMIT 1"
         return runCatching {
             ds.connection.use { conn ->
                 conn.createStatement().use { stmt ->
@@ -395,21 +422,23 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 role = rs.getString("role"),
                                 createdAt = rs.getLong("created_at"),
                                 lastLoginAt = rs.getLong("last_login_at"),
+                                passwordChangedAt = rs.getLong("password_changed_at"),
                                 totpSecret = rs.getString("totp_secret")
                             )
                         } else null
                     }
                 }
             }
-        }.getOrNull()
+        }.getOrElse {
+            memoryAdmins.values.firstOrNull()
+        }
     }
 
     /**
-     * 管理员是否已初始化。DB 不可达时返回 true(fail-closed):
-     * 宁可不显示初始化界面,也不允许在状态未知时开放创建管理员的入口。
+     * 管理员是否已初始化。DB 不可达时回退到内存管理员记录(开发/无 DB 模式)。
      */
     fun isAdminInitialized(): Boolean {
-        val ds = dataSource ?: ensureDataSource() ?: return true
+        val ds = dataSource ?: ensureDataSource() ?: return memoryAdmins.isNotEmpty()
         return runCatching {
             ds.connection.use { conn ->
                 conn.createStatement().use { stmt ->
@@ -420,7 +449,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
         }.getOrElse {
             logger.warn("isAdminInitialized failed: {}", it.message)
-            true
+            memoryAdmins.isNotEmpty()
         }
     }
 
@@ -429,8 +458,13 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
      * username 的 UNIQUE 约束:第二个插入者抛重复键异常返回 null。
      */
     fun createInitialAdmin(username: String, passwordPlain: String): AdminUser? {
-        val ds = dataSource ?: ensureDataSource() ?: return null
         if (isAdminInitialized()) return null
+        val ds = dataSource ?: ensureDataSource()
+        if (ds == null) {
+            val admin = createAdmin(username, passwordPlain, "admin")
+            logger.info("initial in-memory admin '{}' created via /api/setup", username)
+            return admin
+        }
         return runCatching {
             val admin = createAdmin(username, passwordPlain, "admin")
             logger.info("initial admin '{}' created via /api/setup", username)
@@ -1202,12 +1236,23 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
 
     /** 管理员改密(/api/change-password),成功返回 true。 */
     fun updateAdminPassword(adminId: Int, passwordHash: String): Boolean {
-        val ds = dataSource ?: ensureDataSource() ?: return false
+        val ds = dataSource ?: ensureDataSource() ?: run {
+            val existing = memoryAdmins.values.find { it.id == adminId } ?: return false
+            memoryAdmins[existing.username] = existing.copy(
+                passwordHash = passwordHash,
+                passwordChangedAt = System.currentTimeMillis()
+            )
+            return true
+        }
         return runCatching {
             ds.connection.use { conn ->
-                conn.prepareStatement("UPDATE admin_user SET password_hash = ? WHERE id = ?").use { ps ->
+                // 同时盖时间戳:会话校验用 iat < password_changed_at 判定改密前的旧会话失效
+                conn.prepareStatement(
+                    "UPDATE admin_user SET password_hash = ?, password_changed_at = ? WHERE id = ?"
+                ).use { ps ->
                     ps.setString(1, passwordHash)
-                    ps.setInt(2, adminId)
+                    ps.setLong(2, System.currentTimeMillis())
+                    ps.setInt(3, adminId)
                     ps.executeUpdate() == 1
                 }
             }

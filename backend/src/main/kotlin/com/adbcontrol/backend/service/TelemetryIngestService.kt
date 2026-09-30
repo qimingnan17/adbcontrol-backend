@@ -48,6 +48,7 @@ class TelemetryIngestService(
     private val config: BackendConfig,
     private val db: DatabaseService,
     private val pairing: PairingService,
+    private val realtime: RealtimeEventService? = null,
 ) : AutoCloseable {
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -70,6 +71,13 @@ class TelemetryIngestService(
 
     /** 遥测入库与验签异步协程池,避免同步阻塞 Paho 单一事件派发线程导致连接超时被切断 */
     private val ingestScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 最近一次订阅完成时刻。订阅后 [OFFLINE_REPLAY_GRACE_MS] 内的 device/offline 事件
+     * 视为 broker 里遗留的 retained 遗嘱回放(旧版被控端 setWill retained=true 会永久保留
+     * 离线消息,ingestor 每次重连订阅都会收到全部历史遗嘱,把在线设备误标离线),忽略。
+     */
+    @Volatile private var subscribedAtMs: Long = 0L
 
     /** wire 信封,与被控端 MqttEnvelope 字段一致。 */
     @Serializable
@@ -103,6 +111,7 @@ class TelemetryIngestService(
             )
             c.setCallback(object : MqttCallbackExtended {
                 override fun connectComplete(reconnect: Boolean, serverURI: String?) {
+                    subscribedAtMs = System.currentTimeMillis()
                     subscribeTopics(c)
                     logger.info("ingestor connected to {} (reconnect={})", serverURI, reconnect)
                 }
@@ -127,6 +136,12 @@ class TelemetryIngestService(
             attemptConnect(c, options)
         }.onFailure {
             logger.error("ingestor start failed, retrying in 60s: {}", it.message)
+            if (client == null) {
+                // 构造阶段(如 URI 非法)就失败时没有任何连接可挂重连回调,
+                // 此前只打日志导致 ingestor 永久停摆(实测问题);显式排一次 start() 重试
+                retryScheduler.schedule({ if (!closed) start() }, 60, java.util.concurrent.TimeUnit.SECONDS)
+                return@onFailure
+            }
             client?.let { c ->
                 val opts = buildOptions(username, password)
                 scheduleReconnect(c, opts)
@@ -192,7 +207,15 @@ class TelemetryIngestService(
 
         // LWT: device/offline/<deviceId> 的 payload 是裸 deviceId,非 envelope。
         if (topic.startsWith(MqttTopics.DEVICE_OFFLINE_PREFIX)) {
+            // 订阅刚完成时的离线事件是 broker 遗留 retained 遗嘱的回放,不是真实掉线
+            // (真实掉线的遗嘱发生在设备断连那一刻,不会恰好挤在订阅后的几秒窗口内)
+            val sinceSubscribe = System.currentTimeMillis() - subscribedAtMs
+            if (sinceSubscribe in 0 until OFFLINE_REPLAY_GRACE_MS) {
+                logger.debug("drop retained-LWT replay on {} ({}ms after subscribe)", topic, sinceSubscribe)
+                return
+            }
             db.markOffline(deviceId, System.currentTimeMillis())
+            realtime?.emit(RealtimeEventService.Event.DeviceOffline(deviceId))
             return
         }
 
@@ -236,6 +259,7 @@ class TelemetryIngestService(
                     foregroundPkg = r.foregroundPackage,
                     lastSeen = r.timestamp,
                 )
+                realtime?.emit(RealtimeEventService.Event.DeviceStatus(deviceId, r.battery, r.network.name, r.timestamp))
             }
             topic.startsWith(MqttTopics.HEALTH_PREFIX) -> {
                 val r = json.decodeFromString(HealthReport.serializer(), envelope.payload)
@@ -302,6 +326,7 @@ class TelemetryIngestService(
                         buttonText = ack.buttonText,
                         ackedAt = ack.timestamp,
                     )
+                    realtime?.emit(RealtimeEventService.Event.ReminderAckEvent(deviceId, envelope.id, ack.buttonText))
                     return
                 }
                 val r = json.decodeFromString(ExecutionResult.serializer(), envelope.payload)
@@ -313,6 +338,7 @@ class TelemetryIngestService(
                     durationMs = r.durationMs,
                     executedAt = r.timestamp,
                 )
+                realtime?.emit(RealtimeEventService.Event.CommandResult(deviceId, envelope.id, r.success, r.output))
             }
             else -> logger.debug("ignore unhandled ingest topic {}", topic)
         }
@@ -327,5 +353,10 @@ class TelemetryIngestService(
             client?.close()
         }
         client = null
+    }
+
+    private companion object {
+        /** 订阅完成后的遗嘱回放忽略窗口。 */
+        const val OFFLINE_REPLAY_GRACE_MS = 5_000L
     }
 }

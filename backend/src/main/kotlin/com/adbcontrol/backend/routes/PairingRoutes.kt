@@ -6,15 +6,18 @@ import com.adbcontrol.backend.service.PairingService
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
-import io.ktor.server.routing.Routing
+import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 
 /**
  * 配对 / 续期端点(README 8.3)。
  * - POST /pair:校验 pairToken,签发临时 MQTT 凭证 + sessionKey,返回 PairingResponse。
  * - POST /renew:校验身份,签发新 MQTT 密码,返回 RenewResponse。
+ *
+ * 接收者统一用 [Route]:声明为 `fun Routing.xxx` 会在嵌套路由块里被解析到外层
+ * Routing 接收者,导致路由逃出 authenticate 等包装块(见 EmqxRoutes 注释)。
  */
-fun Routing.pairingRoutes(service: PairingService) {
+fun Route.pairingRoutes(service: PairingService) {
     post("/pair") {
         val payload = call.receive<PairTokenPayload>()
         when (val r = service.pair(payload)) {

@@ -9,6 +9,7 @@ import com.adbcontrol.backend.model.RenewRequest
 import com.adbcontrol.backend.model.RenewResponse
 import com.adbcontrol.backend.security.CryptoUtil
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
 import java.security.MessageDigest
@@ -54,6 +55,11 @@ class PairingService(
 
     private val tokens = ConcurrentHashMap<String, PairTokenRecord>()
     private val sessions = ConcurrentHashMap<String, SessionRecord>()
+
+    /** 过期会话的深度清理(EMQX 账号/ACL/DB 行)异步执行,不阻塞 pair/renew 路径。 */
+    private val cleanupScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
 
     init {
         // 启动时从 pair_session 表恢复配对会话(Bug#25 修复:重启后丢配对)。
@@ -244,6 +250,7 @@ class PairingService(
         var outcome: RenewResult? = null
         var renewedOldPassword: String = ""
         var renewedNewPassword: String = ""
+        var renewedOldExpiresAt: Long = 0L
         sessions.compute(req.deviceId) { _, s ->
             if (s == null) return@compute null  // 未找到,由外部返回 DEVICE_NOT_FOUND
             // Bug#6:常数时间比较 pairToken,避免时序侧信道
@@ -261,6 +268,7 @@ class PairingService(
                 return@compute s
             }
             val oldPassword = s.mqttPassword
+            val oldExpiresAt = s.expiresAt
             val newPassword = CryptoUtil.randomBase64(BackendConstants.MQTT_PASSWORD_BYTES)
             val newExpiresAt = now + BackendConstants.CREDENTIAL_TTL_MS
             s.mqttPassword = newPassword
@@ -273,6 +281,7 @@ class PairingService(
             )
             renewedOldPassword = oldPassword
             renewedNewPassword = newPassword
+            renewedOldExpiresAt = oldExpiresAt
             s
         } ?: return RenewResult.Fail(PairingError("DEVICE_NOT_FOUND", "未找到配对会话"))
 
@@ -282,7 +291,15 @@ class PairingService(
             val upd = emqxProxy.updateAuthUserPassword(req.deviceId, renewedNewPassword)
             if (upd.status !in 200..299) {
                 logger.warn("renew: emqx password update failed {} for {}", upd.status, req.deviceId)
-                sessions[req.deviceId]?.let { it.mqttPassword = renewedOldPassword }
+                // 带身份守卫的回滚:仅当记录仍是本次 renew 写入的状态时才回退,
+                // 避免并发第二次 renew 已写入更新值后被旧值覆盖(实测竞态)
+                sessions.compute(req.deviceId) { _, cur ->
+                    if (cur != null && cur.mqttPassword == renewedNewPassword) {
+                        cur.mqttPassword = renewedOldPassword
+                        cur.expiresAt = renewedOldExpiresAt
+                    }
+                    cur
+                }
                 outcome = RenewResult.Fail(PairingError("SERVER_ERROR", "EMQX 密码更新失败(${upd.status}),请稍后重试"))
             }
         }
@@ -310,7 +327,24 @@ class PairingService(
     /** Bug#5:清理过期 pair token 与超期会话,避免内存无限增长。在 pair/renew 入口顺手触发。 */
     private fun cleanupExpired(now: Long) {
         tokens.entries.removeAll { (_, t) -> now > t.expiresAt }
-        sessions.entries.removeAll { (_, s) -> now > s.expiresAt + RENEW_GRACE_MS }
+        val expired = mutableListOf<String>()
+        sessions.entries.removeAll { (_, s) ->
+            if (now > s.expiresAt + RENEW_GRACE_MS) { expired.add(s.deviceId); true } else false
+        }
+        // 深度清理:过期会话的 EMQX 账号与 ACL 规则此前永不回收(实测问题),
+        // 设备在过期+宽限后仍能收发 MQTT。这里异步删账号/ACL/DB 行;删失败仅告警,
+        // revokePairingToken/removeDevice 路径仍可手动彻底清除。
+        for (deviceId in expired) {
+            cleanupScope.launch {
+                logger.info("session expired, deep-cleaning device {}", deviceId)
+                runCatching { emqxProxy.deleteAuthUser(deviceId) }
+                    .onFailure { e -> logger.warn("deep cleanup deleteAuthUser {}: {}", deviceId, e.message) }
+                runCatching { aclService.removeForDevice(deviceId) }
+                    .onFailure { e -> logger.warn("deep cleanup acl {}: {}", deviceId, e.message) }
+                runCatching { databaseService.deletePairSession(deviceId) }
+                    .onFailure { e -> logger.warn("deep cleanup db row {}: {}", deviceId, e.message) }
+            }
+        }
     }
 
     /** 响应体走 kotlinx 序列化,必须可序列化(缺 @Serializable 时 respond 500)。 */
@@ -324,7 +358,11 @@ class PairingService(
         val qrPayload: String
     )
 
-    fun generatePairToken(deviceName: String?, ttlMs: Long = PAIR_TOKEN_TTL_MS): GeneratedPairToken {
+    fun generatePairToken(
+        deviceName: String?,
+        ttlMs: Long = PAIR_TOKEN_TTL_MS,
+        preferredServerUrl: String? = null
+    ): GeneratedPairToken {
         val now = System.currentTimeMillis()
         val deviceId = "dev_" + java.util.UUID.randomUUID().toString().replace("-","").substring(0,14)
         val pairToken = "pt_" + java.security.SecureRandom().let { sr ->
@@ -339,8 +377,15 @@ class PairingService(
             expiresAt = now + ttlMs,
             usedAt = 0L,
         )
+        // 优先使用真实可达地址:当配置为 example.com 占位或为空时，回退到请求 Origin
+        val targetServerUrl = when {
+            config.serverUrl.isNotBlank() && !config.serverUrl.contains("example.com") -> config.serverUrl
+            !preferredServerUrl.isNullOrBlank() && !preferredServerUrl.contains("example.com") -> preferredServerUrl
+            config.serverUrl.isNotBlank() -> config.serverUrl
+            else -> preferredServerUrl ?: "http://localhost:8080"
+        }
         val qrPayload = buildString {
-            val safeServer = config.serverUrl.replace("\"", "\\\"")
+            val safeServer = targetServerUrl.trimEnd('/').replace("\"", "\\\"")
             val safeName = name.replace("\"", "\\\"")
             append("{\"pairToken\":\"").append(pairToken).append("\"")
             append(",\"deviceId\":\"").append(deviceId).append("\"")
@@ -427,13 +472,15 @@ class PairingService(
         return had
     }
 
-    /** 删除内存会话 + DB pair_session + EMQX 设备账号(后两者 best-effort)。 */
+    /** 删除内存会话 + DB pair_session + EMQX 设备账号与 ACL 规则(后三者 best-effort)。 */
     private suspend fun removeSessionAndEmqx(deviceId: String) {
         sessions.remove(deviceId)
         runCatching { databaseService.deletePairSession(deviceId) }
             .onFailure { e -> logger.warn("deletePairSession failed for {}: {}", deviceId, e.message) }
         runCatching { emqxProxy.deleteAuthUser(deviceId) }
             .onFailure { e -> logger.warn("deleteAuthUser failed for {}: {}", deviceId, e.message) }
+        runCatching { aclService.removeForDevice(deviceId) }
+            .onFailure { e -> logger.warn("removeAclRules failed for {}: {}", deviceId, e.message) }
     }
 
     companion object {

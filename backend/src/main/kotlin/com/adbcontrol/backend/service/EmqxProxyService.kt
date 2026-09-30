@@ -170,15 +170,85 @@ class EmqxProxyService(private val config: BackendConfig) : AutoCloseable {
     suspend fun deleteAuthUser(userId: String): EmqxResponse =
         proxyDelete("${authUsersPath}/${encode(userId)}")
 
+    // ---------- 内置数据库授权:设备 topic ACL(AclService 用) ----------
+    // 每设备按 username=deviceId 写 allow 规则,把 pub/sub 限制在自己的 topic 集合内。
+    // EMQX 5.4+ 规则字段是 actions 数组;更早的 5.x 用单数字符串 action。写入时先按新
+    // schema,400 再回退旧 schema,兼容两个版本段。
+
+    // EMQX 5.8+:规则按作用域管理(用户名/ClientID/全部),创建端点为
+    //   POST /authorization/sources/built_in_database/rules/users/{username}
+    // 5.4-5.7 为 POST /authorization/sources/built_in_database/rules(裸 rules 表)。
+    // 两种 API 形态都在这里支持,由 [AclService] 先新后旧回退。
+    private val aclRulesPath = "/authorization/sources/built_in_database/rules"
+
+    /** 新版(5.8+):按用户名作用域整体替换该用户的全部规则(PUT create-or-replace)。 */
+    suspend fun putScopedAclRules(username: String, rules: List<Pair<String, String>>): EmqxResponse {
+        val body = json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                put("username", username)
+                put("rules", kotlinx.serialization.json.JsonArray(rules.map { (action, topic) ->
+                    buildJsonObject {
+                        put("permission", "allow")
+                        put("action", action)
+                        put("topic", topic)
+                    }
+                }))
+            },
+        )
+        return proxyPut("$aclRulesPath/users/${encode(username)}", body)
+    }
+
+    /** 新版(5.8+):按用户名作用域删除该用户全部规则。 */
+    suspend fun deleteScopedAclRules(username: String): EmqxResponse =
+        proxyDelete("$aclRulesPath/users/${encode(username)}")
+
+    /** 旧版(5.4-5.7):裸 rules 表写入(先新 schema 后旧 schema 字段名回退)。 */
+    suspend fun createLegacyAclRule(username: String, action: String, topic: String): EmqxResponse {
+        val newSchema = json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                put("username", username)
+                put("permission", "allow")
+                put("actions", kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(action))))
+                put("topic", topic)
+            },
+        )
+        val resp = proxyPost(aclRulesPath, newSchema)
+        if (resp.status != HttpStatusCode.BadRequest.value) return resp
+        val legacySchema = json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                put("username", username)
+                put("permission", "allow")
+                put("action", action)
+                put("topic", topic)
+            },
+        )
+        return proxyPost(aclRulesPath, legacySchema)
+    }
+
+    suspend fun listAclRules(): EmqxResponse = proxyGet(aclRulesPath, "_limit=500")
+
+    suspend fun deleteAclRule(ruleId: String): EmqxResponse =
+        proxyDelete("$aclRulesPath/${encode(ruleId)}")
+
     suspend fun publish(topic: String, payload: String, qos: Int = 1): EmqxResponse {
-        val body = buildString {
-            append("{\"topic\":\"")
-            append(topic.replace("\"", "\\\""))
-            append("\",\"payload\":\"")
-            append(java.util.Base64.getEncoder().encodeToString(payload.toByteArray(Charsets.UTF_8)).replace("\"", "\\\""))
-            append("\",\"qos\":").append(qos)
-            append(",\"retain\":false}")
-        }
+        // buildJsonObject 构造:topic/deviceId 含引号、反斜杠等字符时由序列化器正确转义,
+        // 避免手拼 JSON 字符串的注入/格式损坏。
+        // payload 直接放原始 UTF-8 字符串(EMQX 5 的 publish schema 只认 payload 字段,
+        // 没有 payload_base64;信封本就是 JSON 文本)。此前把 Base64 文本放进 payload,
+        // 订阅端(被控端 MessageCodec)收到的是 Base64 字符串而非信封 JSON,解码静默
+        // 失败、所有 Web 下发命令失效(本地全链路联调实测复现)。
+        val body = json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                put("topic", topic)
+                put("payload", payload)
+                put("qos", qos)
+                put("retain", false)
+            },
+        )
         return proxyPost(config.emqxPublishPath, body)
     }
 

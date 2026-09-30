@@ -3,6 +3,7 @@ package com.adbcontrol.backend.route
 import com.adbcontrol.backend.model.*
 import com.adbcontrol.backend.plugin.UserSession
 import com.adbcontrol.backend.security.LoginRateLimiter
+import com.adbcontrol.backend.security.NetworkSecurity
 import com.adbcontrol.backend.security.PasswordHasher
 import com.adbcontrol.backend.service.CloudflareService
 import com.adbcontrol.backend.service.DatabaseService
@@ -32,10 +33,9 @@ private data class SetupRequest(
 )
 
 private fun ApplicationCall.clientIp(): String =
-    request.header("Fly-Client-IP")
-        ?: request.header("CF-Connecting-IP")
-        ?: request.header("X-Forwarded-For")?.split(",")?.first()?.trim()
-        ?: request.local.remoteAddress
+    // 只有直连对端是可信代理(本机 cloudflared / 内网 / Tailscale)时才采信转发头;
+    // 公网直连的请求一律用对端地址,否则伪造 XFF 即可轮换限流键无限爆破
+    NetworkSecurity.trustedClientIp(this)
 
 private fun ApplicationCall.clientOrigin(): String {
     val proto = request.header("X-Forwarded-Proto")
@@ -46,6 +46,16 @@ private fun ApplicationCall.clientOrigin(): String {
         ?: "localhost:8080"
     return "$proto://$host"
 }
+
+/** 归一化 URL 的 scheme+host[+非默认端口],同源比较用;非法返回 null。 */
+private fun originKey(url: String): String? = runCatching {
+    val uri = java.net.URI(url.trim())
+    val scheme = uri.scheme?.lowercase() ?: return@runCatching null
+    val host = uri.host?.lowercase() ?: return@runCatching null
+    var port = uri.port
+    if (port == -1 || (scheme == "http" && port == 80) || (scheme == "https" && port == 443)) port = -1
+    "$scheme://$host" + if (port > 0) ":$port" else ""
+}.getOrNull()
 
 private data class OidcStateInfo(
     val origin: String,
@@ -105,7 +115,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         }
         LoginRateLimiter.clear("setup:ip:$remoteIp")
         db.updateAdminLastLogin(admin.id)
-        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role, System.currentTimeMillis()))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }
 
@@ -137,7 +147,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         db.updateAdminLastLogin(admin.id)
         LoginRateLimiter.clear("ip:$remoteIp")
         LoginRateLimiter.clear(userIpKey)
-        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role, System.currentTimeMillis()))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }
 
@@ -147,7 +157,9 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
      */
     get("/api/auth/cf-access") {
         val cfEmail = call.request.header("Cf-Access-Authenticated-User-Email")?.trim()
-        if (!cfEmail.isNullOrBlank()) {
+        // 头可伪造:仅在请求确定经本机 cloudflared 转发时才回显管理员信息,
+        // 否则公网直连者可借此探测主管理员用户名/角色/最近登录时间。
+        if (!cfEmail.isNullOrBlank() && com.adbcontrol.backend.security.NetworkSecurity.isLoopbackPeer(call)) {
             val primaryAdmin = db.getPrimaryAdmin()
             call.respond(CfAccessStatusResponse(hasAccessHeader = true, email = cfEmail, user = primaryAdmin?.copy(passwordHash = "")))
         } else {
@@ -158,11 +170,26 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
     /**
      * Cloudflare Zero Trust (Access) 免密登录：
      * 基于 Cloudflare 隧道注入的 Cf-Access-Authenticated-User-Email 头校验身份。
+     * 该头本身可被任意客户端伪造,因此只信 TCP 直连对端为本机回环的请求
+     * (cloudflared 与后端同机部署,转发请求一律来自 127.0.0.1);
+     * 公网/内网直连后端端口的伪造请求直接拒绝。若 cloudflared 独立部署在其它机器,
+     * 此通道将不可用(fail-closed),管理员仍可用密码 / OIDC / API Token 登录。
      */
     post("/api/auth/cf-access-login") {
+        val remoteIp = call.clientIp()
+        if (LoginRateLimiter.isLocked("cfaccess:ip:$remoteIp")) {
+            call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "尝试次数过多，请 5 分钟后再试"))
+            return@post
+        }
         val cfEmail = call.request.header("Cf-Access-Authenticated-User-Email")?.trim()
         if (cfEmail.isNullOrBlank()) {
+            LoginRateLimiter.fail("cfaccess:ip:$remoteIp")
             call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "未检测到 Cloudflare Zero Trust (Access) 认证头"))
+            return@post
+        }
+        if (!com.adbcontrol.backend.security.NetworkSecurity.isLoopbackPeer(call)) {
+            LoginRateLimiter.fail("cfaccess:ip:$remoteIp")
+            call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "Access 认证头仅接受经 Cloudflare 隧道(本机回环)转发的请求"))
             return@post
         }
         var admin = db.getPrimaryAdmin()
@@ -176,7 +203,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
             return@post
         }
         db.updateAdminLastLogin(admin.id)
-        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role, System.currentTimeMillis()))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }
 
@@ -188,6 +215,15 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         val remoteIp = call.clientIp()
         if (LoginRateLimiter.isLocked("cftoken:ip:$remoteIp")) {
             call.respond(HttpStatusCode.TooManyRequests, mapOf("message" to "Token 登录失败过多，请 5 分钟后再试"))
+            return@post
+        }
+        // 安全约束:任何"有效"的 Cloudflare API Token(攻击者自己注册 CF 账号也能签发)
+        // 都能换取管理员会话,属于高危通道。因此仅允许受信通道使用:
+        // 本机 cloudflared 转发(回环)或 Tailscale/内网直连;公网直连一律拒绝。
+        if (!com.adbcontrol.backend.security.NetworkSecurity.isLoopbackPeer(call) &&
+            !com.adbcontrol.backend.security.NetworkSecurity.isLocalOrTailscale(call)
+        ) {
+            call.respond(HttpStatusCode.Unauthorized, mapOf("message" to "Token 登录仅支持经 Cloudflare 隧道或 Tailscale 内网访问"))
             return@post
         }
         val req = runCatching { call.receive<CfTokenLoginRequest>() }.getOrNull()
@@ -217,7 +253,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         runCatching {
             settingsService.saveSecrets(mapOf("cf.api_token" to token))
         }
-        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role, System.currentTimeMillis()))
         call.respond(LoginResponse(ok = true, user = admin.copy(passwordHash = "")))
     }
 
@@ -238,8 +274,15 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
             return@get
         }
 
+        // 开放重定向防护:显式 origin 必须与配置的 server.url 或当前请求来源同源,
+        // 否则(如 origin=https://evil.com)认证成功后会被 302 到攻击者站点。
         val originParam = call.request.queryParameters["origin"]?.trim()
-        val origin = if (!originParam.isNullOrBlank()) originParam.trimEnd('/') else call.clientOrigin().trimEnd('/')
+        val fallbackOrigin = call.clientOrigin().trimEnd('/')
+        val origin = if (!originParam.isNullOrBlank() &&
+            originKey(originParam) != null &&
+            (originKey(originParam) == originKey(settingsService.getRawProperty("server.url")) ||
+                originKey(originParam) == originKey(fallbackOrigin))
+        ) originParam.trimEnd('/') else fallbackOrigin
 
         val customRedirect = settingsService.getRawProperty("cf.oidc_redirect_uri")
         val redirectUri = if (customRedirect.isNotBlank()) customRedirect else "$origin/api/auth/cf-oidc/callback"
@@ -308,7 +351,7 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
         }
 
         db.updateAdminLastLogin(admin.id)
-        call.sessions.set(UserSession(admin.id, admin.username, admin.role))
+        call.sessions.set(UserSession(admin.id, admin.username, admin.role, System.currentTimeMillis()))
         call.respondRedirect("$origin/dashboard?cf_sso=success")
     }
 
@@ -369,7 +412,10 @@ fun Route.authRoutes(db: DatabaseService, cfService: CloudflareService, settings
                 return@post
             }
             LoginRateLimiter.clear("changepwd:$username")
-            call.respond(mapOf("ok" to true))
+            // 改密后吊销当前会话强制重新登录:cookie 里的 iat 已早于新的
+            // password_changed_at,即使不清也会被 validate 拒绝,这里显式清更直接
+            call.sessions.clear<UserSession>()
+            call.respond(mapOf("ok" to true, "message" to "密码已更新，请使用新密码重新登录"))
         }
     }
 }

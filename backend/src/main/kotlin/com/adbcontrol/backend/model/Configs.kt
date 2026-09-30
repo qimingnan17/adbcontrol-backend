@@ -41,6 +41,8 @@ data class DbConfig(
     val name: String,
     val user: String,
     val password: String,
+    /** 远程 MySQL TLS 是否校验服务端证书(默认 false 保持历史兼容)。 */
+    val sslVerify: Boolean = false,
 )
 
 /**
