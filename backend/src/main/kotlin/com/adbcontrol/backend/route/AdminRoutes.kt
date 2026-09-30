@@ -4,14 +4,17 @@ import com.adbcontrol.backend.model.TaskRequest
 import com.adbcontrol.backend.service.DatabaseService
 import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.PairingService
+import com.adbcontrol.backend.service.TaskSchedulerService
 import io.ktor.http.*
 import io.ktor.server.auth.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -117,7 +120,10 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         }
 
         post("/api/tasks") {
-            val b = call.receive<TaskRequest>()
+            val b = runCatching { call.receive<TaskRequest>() }.getOrNull()
+                ?: return@post call.respond(HttpStatusCode.BadRequest, mapOf("message" to "请求体格式错误"))
+            validateTaskRequest(b)
+                ?.let { return@post call.respond(HttpStatusCode.BadRequest, mapOf("message" to it)) }
             val id = db.upsertTask(b)
                 ?: return@post call.respond(HttpStatusCode.InternalServerError, mapOf("message" to "task create failed"))
             call.respond(mapOf("id" to id))
@@ -126,7 +132,10 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
         put("/api/tasks/{id}") {
             val id = call.parameters["id"]?.toLongOrNull()
                 ?: return@put call.respond(HttpStatusCode.BadRequest, mapOf("message" to "invalid task id"))
-            val b = call.receive<TaskRequest>()
+            val b = runCatching { call.receive<TaskRequest>() }.getOrNull()
+                ?: return@put call.respond(HttpStatusCode.BadRequest, mapOf("message" to "请求体格式错误"))
+            validateTaskRequest(b)
+                ?.let { return@put call.respond(HttpStatusCode.BadRequest, mapOf("message" to it)) }
             db.upsertTask(b.copy(id = id))
                 ?: return@put call.respond(HttpStatusCode.NotFound, mapOf("message" to "task not found"))
             call.respond(mapOf("ok" to true))
@@ -170,7 +179,9 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
             // ttl 收敛到 [1 分钟, 24 小时],防止生成永不过期的配对 token
             val ttl = (body?.get("ttlMs")?.jsonPrimitive?.longOrNull ?: 10 * 60_000L)
                 .coerceIn(60_000L, 24 * 3_600_000L)
-            val token = pairing.generatePairToken(name, ttl)
+            val preferredUrl = body?.get("serverUrl")?.jsonPrimitive?.contentOrNull?.trim()
+                ?: com.adbcontrol.backend.security.NetworkSecurity.clientOrigin(call)
+            val token = pairing.generatePairToken(name, ttl, preferredUrl)
             call.respond(token)
         }
 
@@ -187,4 +198,23 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
             else call.respond(HttpStatusCode.NotFound, mapOf("message" to "未找到匹配的令牌或设备"))
         }
     }
+}
+
+/**
+ * 创建/更新任务前的参数预校验。返回错误文案,合法返回 null。
+ * 没有这层校验时:非法 cron 经调度器容错静默永不执行、坏 commandJson 会让
+ * 调度器每轮扫描在该任务上抛异常(已修复为逐任务隔离,但任务本身仍不可用)。
+ */
+private fun validateTaskRequest(b: TaskRequest): String? {
+    if (b.enabled != true) return null // 未启用的任务不预执行,宽松放行
+    val cron = b.cronExpr?.trim()
+    if (cron.isNullOrEmpty()) return "启用任务必须提供 cronExpr"
+    if (!TaskSchedulerService.isValidCron(cron)) return "cronExpr 不是合法的 UNIX cron 表达式(5 字段)"
+    val cmdJson = b.commandJson?.trim()
+    if (cmdJson.isNullOrEmpty()) return "启用任务必须提供 commandJson"
+    val parsed = runCatching { Json.parseToJsonElement(cmdJson).jsonObject }.getOrNull()
+        ?: return "commandJson 不是合法的 JSON 对象"
+    val type = runCatching { parsed["type"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+    if (type.isNullOrBlank()) return "commandJson 必须包含字符串字段 type"
+    return null
 }

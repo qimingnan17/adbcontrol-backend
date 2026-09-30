@@ -8,7 +8,7 @@ import io.ktor.http.content.TextContent
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.response.respond
-import io.ktor.server.routing.Routing
+import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 
 /**
@@ -17,8 +17,12 @@ import io.ktor.server.routing.get
  * - GET /emqx/subscriptions?clientId=:代理 EMQX REST /clients/{clientId}/subscriptions。
  *
  * 透传 EMQX 原始 JSON,成功与否都以 EMQX 的状态码回传。
+ *
+ * 注意:扩展接收者必须是 [Route] 而非 Routing —— 声明为 `fun Routing.xxx` 时,
+ * 在 `routing { authenticate { ... } }` 里调用会被 Kotlin 解析到外层 Routing 接收者,
+ * 路由会注册到 authenticate 块之外,鉴权静默失效(实测踩坑)。
  */
-fun Routing.emqxRoutes(service: EmqxProxyService) {
+fun Route.emqxRoutes(service: EmqxProxyService) {
     get("/emqx/devices") {
         val result = service.listClients(call.request.queryParameters.formUrlEncode())
         call.respondEmqx(result)

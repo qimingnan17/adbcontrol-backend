@@ -1,6 +1,14 @@
 package com.adbcontrol.backend.service
 
 import com.adbcontrol.backend.config.BackendConfig
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 
 /**
@@ -15,8 +23,12 @@ import org.slf4j.LoggerFactory
  * EMQX Cloud Serverless 的 ACL 在控制台按用户名配置,REST 写入方式随部署类型不同。
  * 当前实现先按数据建模 + 日志记录,实际 EMQX REST/控制台写入留 TODO(参见 README 10.2)。
  */
-class AclService(private val config: BackendConfig) {
+class AclService(
+    private val config: BackendConfig,
+    private val emqx: EmqxProxyService,
+) {
     private val logger = LoggerFactory.getLogger(javaClass)
+    private val json = Json { ignoreUnknownKeys = true }
 
     data class DeviceAcl(
         val username: String,
@@ -26,7 +38,9 @@ class AclService(private val config: BackendConfig) {
 
     /** 构造被控端的 ACL 规则集(deviceId 前缀绑定)。 */
     fun buildDeviceAcl(deviceId: String): DeviceAcl {
-        val username = "${config.emqxAppId}@$deviceId"
+        // 与 PairingService.provisionEmqxUser 的账号名保持一致:username 就是 deviceId。
+        // 之前用 `${appid}@${deviceId}`,与实际签发的 EMQX 账号对不上,接入 ACL REST 后会静默错配。
+        val username = deviceId
         val pub = listOf(
             "result/$deviceId",
             "status/$deviceId",
@@ -48,16 +62,69 @@ class AclService(private val config: BackendConfig) {
     }
 
     /**
-     * 配对成功后为 deviceId 写入 ACL。
-     * TODO: 接 EMQX REST(`POST /api/v5/authorization/...`,自建版)或控制台 API。
-     *       Serverless 实例需在控制台为 username 手动配置 topic 前缀 ACL。
-     * 当前:打印规则,便于运维对照控制台手工配置。
+     * 配对成功后为 deviceId 写入 EMQX 授权规则(内置数据库 authorization source)。
+     * 5.8+:一次 PUT 整体写入该用户全部规则;5.4-5.7 回退为裸 rules 表逐条写入。
+     * Best-effort:失败仅告警不抛异常,不阻塞配对;全部失败时设备仍可收发
+     * (与历史"Serverless 无 ACL"行为一致),但日志会明确暴露缺口供运维介入。
      */
-    fun applyForDevice(deviceId: String) {
+    suspend fun applyForDevice(deviceId: String) {
         val acl = buildDeviceAcl(deviceId)
         logger.info("[ACL] apply for deviceId={} (username={})", deviceId, acl.username)
-        logger.info("[ACL]   publish -> {}", acl.publish)
-        logger.info("[ACL]   subscribe -> {}", acl.subscribe)
-        // TODO: emqx REST 写入 authorization rule
+        val rules = acl.publish.map { "publish" to it } + acl.subscribe.map { "subscribe" to it }
+        val r = emqx.putScopedAclRules(acl.username, rules)
+        if (r.status in 200..299) {
+            logger.info("[ACL] device {} rules written: {} rule(s) via scoped API", deviceId, rules.size)
+            return
+        }
+        if (r.status == 405 || r.status == 404) {
+            // 旧版 EMQX:裸 rules 表逐条写入(新/旧字段名自动回退)
+            var ok = 0
+            for ((action, topic) in rules) {
+                if (applyLegacyRule(acl.username, action, topic)) ok++
+            }
+            logger.info("[ACL] device {} rules written via legacy API: ok={}/{}", deviceId, ok, rules.size)
+            return
+        }
+        logger.warn("[ACL] write rules failed for {}: HTTP {}", deviceId, r.status)
+    }
+
+    private suspend fun applyLegacyRule(username: String, action: String, topic: String): Boolean {
+        val r = emqx.createLegacyAclRule(username, action, topic)
+        if (r.status in 200..299 || r.status == 409) return true // 409=已存在(重配对),视为成功
+        logger.warn("[ACL] write rule failed: username={} {} '{}' -> HTTP {}", username, action, topic, r.status)
+        return false
+    }
+
+    /**
+     * 移除设备的全部 ACL 规则(删除设备/吊销令牌时调用,best-effort)。
+     * EMQX 列表接口不支持按 username 过滤,拉全量后在后端侧过滤再逐条删除。
+     */
+    suspend fun removeForDevice(deviceId: String) {
+        val acl = buildDeviceAcl(deviceId)
+        // 5.8+:按作用域一次删除该用户全部规则;旧版回退到"拉全量列表+逐条删"
+        val scoped = emqx.deleteScopedAclRules(acl.username)
+        if (scoped.status in 200..299) {
+            logger.info("[ACL] removed scoped rules for {}", deviceId)
+            return
+        }
+        val list = emqx.listAclRules()
+        if (list.status !in 200..299) {
+            logger.warn("[ACL] remove rules for {} failed (list HTTP {})", deviceId, list.status)
+            return
+        }
+        runCatching {
+            val root = json.parseToJsonElement(list.body).jsonObject
+            val data = root["data"] as? JsonArray ?: return
+            var removed = 0
+            for (rule in data) {
+                val obj = rule as? JsonObject ?: continue
+                val ruleUser = obj["username"]?.jsonPrimitive?.contentOrNull
+                if (ruleUser != acl.username) continue
+                val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: continue
+                val del = emqx.deleteAclRule(id)
+                if (del.status in 200..299) removed++
+            }
+            if (removed > 0) logger.info("[ACL] removed {} rule(s) for {}", removed, deviceId)
+        }.onFailure { logger.warn("[ACL] remove rules for {} failed: {}", deviceId, it.message) }
     }
 }

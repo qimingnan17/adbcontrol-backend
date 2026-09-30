@@ -54,6 +54,7 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
     /**
      * 读取配置并进行安全脱敏。
      */
+    @Synchronized
     fun readMaskedSecrets(): SecretsResponse {
         val file = getSecretsFile()
         val props = Properties()
@@ -63,7 +64,8 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
 
         fun maskSecret(raw: String?): String {
             if (raw.isNullOrBlank()) return ""
-            if (raw.length <= 6) return "******"
+            // 短密钥显示前2+后4会泄漏大半内容(8 位密码泄漏 6/8),不足 12 位一律全掩码
+            if (raw.length < 12) return "******"
             val prefix = raw.take(2)
             val suffix = raw.takeLast(4)
             return "$prefix******$suffix"
@@ -138,6 +140,7 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
     /**
      * 读取指定配置项原始未脱敏值。
      */
+    @Synchronized
     fun getRawProperty(key: String, default: String = ""): String {
         val file = getSecretsFile()
         if (!file.exists() || !file.canRead()) return default
@@ -214,16 +217,61 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             appendLine("d1.database_id = ${map["d1.database_id"] ?: config.d1DatabaseId}")
             appendLine("d1.database_name = ${map["d1.database_name"] ?: config.d1DatabaseName}")
             appendLine("d1.account_id = ${map["d1.account_id"] ?: config.d1AccountId}")
+
+            // 保留非预置 key:上面只重写固定键集合,其余原样追加,
+            // 否则每次保存都会把运维手工加进文件的自定义项静默抹掉。
+            val knownKeys = setOf(
+                "server.url", "pm.token",
+                "cf.api_token", "cf.team_domain", "cf.oidc_client_id", "cf.oidc_client_secret", "cf.oidc_redirect_uri",
+                "r2.endpoint", "r2.bucket", "r2.access_key", "r2.access_secret",
+                "emqx.host", "emqx.port", "emqx.appid", "emqx.rest_endpoint", "emqx.app_secret",
+                "emqx.ingest_username", "emqx.ingest_password",
+                "db.host", "db.port", "db.name", "db.user", "db.password",
+                "d1.database_id", "d1.database_name", "d1.account_id",
+            )
+            val extras = map.entries.filter { it.key !in knownKeys }.sortedBy { it.key }
+            if (extras.isNotEmpty()) {
+                appendLine()
+                appendLine("# ---- Custom entries (preserved) ----")
+                for ((k, v) in extras) {
+                    appendLine("${escapePropsKey(k)} = ${escapePropsValue(v)}")
+                }
+            }
         }
 
-        file.writeText(content, StandardCharsets.UTF_8)
+        // 原子写:先写同目录临时文件再 ATOMIC_MOVE 覆盖。此前 writeText 先截断后写,
+        // 进程写盘中途崩溃会留下半截 secrets 文件,全部密钥丢失(实测风险)。
+        val tmp = java.nio.file.Files.createTempFile(file.parentFile.toPath(), "secrets", ".tmp")
+        try {
+            java.nio.file.Files.write(tmp, content.toByteArray(StandardCharsets.UTF_8))
+            java.nio.file.Files.move(
+                tmp, file.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (e: Exception) {
+            runCatching { java.nio.file.Files.deleteIfExists(tmp) }
+            throw e
+        }
         logger.info("Successfully updated {}", file.absolutePath)
         return true
     }
 
+    /** key 转义:空格/冒号/等号是 Properties 键分隔符,反斜杠是转义符。 */
+    private fun escapePropsKey(k: String): String =
+        k.replace("\\", "\\\\").replace(" ", "\\ ").replace(":", "\\:").replace("=", "\\=")
+
+    /** value 转义:反斜杠与换行符按 java.util.Properties 规则转义,保证回读一致。 */
+    private fun escapePropsValue(v: String): String =
+        v.replace("\\", "\\\\")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+
     /**
      * 获取当前系统绑定的云端资产状态 (Server 域名/隧道、R2 存储桶、D1 数据库)。
      */
+    @Synchronized
     fun getCloudBindings(): CfCloudBindingsResponse {
         val file = getSecretsFile()
         val props = Properties()

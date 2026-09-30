@@ -3,6 +3,8 @@ package com.adbcontrol.backend
 import com.adbcontrol.backend.config.BackendConfig
 import com.adbcontrol.backend.plugin.configureCors
 import com.adbcontrol.backend.plugin.configureSecurity
+import com.adbcontrol.backend.route.realtimeRoutes
+import com.adbcontrol.backend.service.RealtimeEventService
 import com.adbcontrol.backend.route.adminRoutes
 import com.adbcontrol.backend.route.authRoutes
 import com.adbcontrol.backend.route.settingsRoutes
@@ -110,8 +112,8 @@ fun Application.module() {
 
     // 服务装配
     val databaseService = DatabaseService(config)
-    val aclService = AclService(config)
     val emqxProxy = EmqxProxyService(config)
+    val aclService = AclService(config, emqxProxy)
     // PairingService 依赖 emqxProxy:配对时经部署 API 动态注册设备 MQTT 账号
     val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
     val updateService = UpdateService(config, databaseService)
@@ -119,11 +121,25 @@ fun Application.module() {
     val cloudflareService = com.adbcontrol.backend.service.CloudflareService()
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
-    val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService)
+    val realtimeEvents = RealtimeEventService()
+    val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService, realtimeEvents)
     // cron 调度器:定时扫 task 表,通知走 reminder/ 通道,命令走 cmd/
     val taskScheduler = TaskSchedulerService(databaseService, commandBridge)
 
-    configureSecurity(databaseService)
+    // 会话签名密钥:环境变量 > secrets.properties > 首次生成并持久化,
+    // 保证后端重启后已登录管理员会话继续有效(此前每次重启随机,全体管理员被踢回登录页,实测问题)。
+    val sessionSecret = System.getenv("ADB_SESSION_SECRET")?.takeIf { it.isNotBlank() }
+        ?: settingsService.getRawProperty("session.secret").takeIf { it.isNotBlank() }
+        ?: run {
+            val generated = org.apache.commons.codec.binary.Hex.encodeHexString(
+                ByteArray(48).also { java.security.SecureRandom().nextBytes(it) }
+            )
+            settingsService.saveSecrets(mapOf("session.secret" to generated))
+            appLogger.info("session secret generated and persisted to secrets.properties")
+            generated
+        }
+
+    configureSecurity(databaseService, sessionSecret)
 
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
@@ -154,6 +170,8 @@ fun Application.module() {
         settingsRoutes(settingsService, cloudflareService)
         pairingRoutes(pairingService)
         updateRoutes(updateService, commandBridge)
+        // SSE 实时事件流:设备状态/命令结果/签收/离线推给 Web 控制台(内部自带会话保护)
+        realtimeRoutes(realtimeEvents)
         // APK 下载中转:/update/apk?url=<GitHub Release 链接>(check 响应里的直链会被改写指向这里)
         updateApkProxyRoutes()
         // EMQX REST 代理也收进会话保护:不再允许未登录访客枚举在线设备 / 订阅,

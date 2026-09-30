@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -64,47 +65,61 @@ class TaskSchedulerService(
     /** 单个轮询周期:扫描启用任务,命中窗口的逐台下发。 */
     private fun tick() {
         val now = System.currentTimeMillis()
-        val nowZoned = ZonedDateTime.now()
+        // 显式指定业务时区:管理员按本地(北京)时间配置 cron。JVM 默认时区在
+        // Docker/Fly 默认镜像下是 UTC,会让所有任务晚 8 小时触发(实测问题)。
+        // 可用环境变量 ADB_SCHEDULER_ZONE 覆盖,如 Asia/Shanghai。
+        val zone = runCatching { ZoneId.of(System.getenv("ADB_SCHEDULER_ZONE") ?: "Asia/Shanghai") }
+            .getOrElse { ZoneId.of("Asia/Shanghai") }
+        val nowZoned = ZonedDateTime.now(zone)
         // 窗口取轮询周期 ~2 倍,容忍一轮超时丢 tick
         val windowStart = nowZoned.minusNanos(TimeUnit.MILLISECONDS.toNanos(POLL_MS * 2))
         val tasks = db.listTasks()
         for (task in tasks) {
             val enabled = task["enabled"] as? Boolean ?: false
             if (!enabled) continue
-            val expr = (task["cronExpr"] as? String)?.takeIf { it.isNotBlank() } ?: continue
             val taskId = (task["id"] as? Number)?.toLong() ?: continue
+            // 单个坏任务(如 command_json 的 type 是对象/数组导致解析抛异常)绝不能
+            // 中断整轮扫描:listTasks 按 created_at DESC 排序,坏行之后的任务将全部
+            // 永久停摆(实测问题),这里逐任务隔离,记 warn 后继续。
+            runCatching { processTask(task, taskId, windowStart, nowZoned) }
+                .onFailure { logger.warn("task {} skipped: {}", taskId, it.message) }
+        }
+    }
 
-            val fireAt = shouldFire(expr, windowStart, nowZoned)
-            if (fireAt == null || lastFire[taskId] == fireAt) continue
+    /** 处理单个启用任务:命中窗口则占位并发起下发。 */
+    private fun processTask(task: Map<String, Any?>, taskId: Long, windowStart: ZonedDateTime, nowZoned: ZonedDateTime) {
+        val expr = (task["cronExpr"] as? String)?.takeIf { it.isNotBlank() } ?: return
 
-            val commandJson = (task["commandJson"] as? String) ?: continue
-            val parsed = runCatching { json.parseToJsonElement(commandJson) as? JsonObject }.getOrNull() ?: continue
-            val type = parsed["type"]?.jsonPrimitive?.content ?: continue
-            val args = (parsed["args"] as? JsonObject)
-                ?.entries?.mapNotNull { (k, v) -> runCatching { k to v.jsonPrimitive.content }.getOrNull() }
-                ?.toMap() ?: emptyMap()
+        val fireAt = shouldFire(expr, windowStart, nowZoned)
+        if (fireAt == null || lastFire[taskId] == fireAt) return
 
-            val deviceId = (task["deviceId"] as? String)?.takeIf { it.isNotBlank() }
-            val targets = if (deviceId != null) listOf(deviceId)
-            else db.listDevicesWithStatus().map { it.deviceId }
-            if (targets.isEmpty()) continue
+        val commandJson = (task["commandJson"] as? String) ?: return
+        val parsed = runCatching { json.parseToJsonElement(commandJson) as? JsonObject }.getOrNull() ?: return
+        val type = runCatching { parsed["type"]?.jsonPrimitive?.content }.getOrNull() ?: return
+        val args = (parsed["args"] as? JsonObject)
+            ?.entries?.mapNotNull { (k, v) -> runCatching { k to v.jsonPrimitive.content }.getOrNull() }
+            ?.toMap() ?: emptyMap()
 
-            if (!db.markTaskFired(taskId, fireAt)) continue
+        val deviceId = (task["deviceId"] as? String)?.takeIf { it.isNotBlank() }
+        val targets = if (deviceId != null) listOf(deviceId)
+        else db.listDevicesWithStatus().map { it.deviceId }
+        if (targets.isEmpty()) return
 
-            // 先用 fireAt 占位再放发,避免长下发期间下次 tick 重发同一时刻
-            lastFire = lastFire + (taskId to fireAt)
-            scope.launch {
-                for (devId in targets) {
-                    val r = if (type == "notify") {
-                        bridge.dispatchReminder(devId, args, taskId = taskId)
-                    } else {
-                        bridge.dispatch(devId, type, args)
-                    }
-                    when (r) {
-                        is DeviceCommandBridge.DispatchResult.Ok ->
-                            logger.info("task {} fired -> {} ({})", taskId, devId, type)
-                        else -> logger.warn("task {} fire failed -> {}: {}", taskId, devId, r)
-                    }
+        if (!db.markTaskFired(taskId, fireAt)) return
+
+        // 先用 fireAt 占位再放发,避免长下发期间下次 tick 重发同一时刻
+        lastFire = lastFire + (taskId to fireAt)
+        scope.launch {
+            for (devId in targets) {
+                val r = if (type == "notify") {
+                    bridge.dispatchReminder(devId, args, taskId = taskId)
+                } else {
+                    bridge.dispatch(devId, type, args)
+                }
+                when (r) {
+                    is DeviceCommandBridge.DispatchResult.Ok ->
+                        logger.info("task {} fired -> {} ({})", taskId, devId, type)
+                    else -> logger.warn("task {} fire failed -> {}: {}", taskId, devId, r)
                 }
             }
         }
@@ -129,6 +144,11 @@ class TaskSchedulerService(
                 ExecutionTime.forCron(CRON_PARSER.parse(expr)).nextExecution(windowStart).orElse(null)
             }.getOrNull() ?: return null
             return if (!next.isAfter(now)) next.toInstant().toEpochMilli() else null
+        }
+
+        /** 校验 UNIX cron 表达式是否合法(创建/更新任务时预校验,避免静默永不执行)。 */
+        internal fun isValidCron(expr: String): Boolean {
+            return runCatching { CRON_PARSER.parse(expr) }.isSuccess
         }
     }
 }

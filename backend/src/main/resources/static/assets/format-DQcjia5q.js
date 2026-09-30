@@ -1,0 +1,1 @@
+function o(r,e=Date.now()){if(!r)return"—";const n=typeof r=="number"?r:Date.parse(r);if(!Number.isFinite(n))return"—";const t=e-n;return t<6e4?"刚刚":t<36e5?Math.floor(t/6e4)+" 分钟前":t<864e5?Math.floor(t/36e5)+" 小时前":Math.floor(t/864e5)+" 天前"}function f(r){return r?new Date(r).toLocaleString("zh-CN",{hour12:!1}):"—"}export{f as a,o as f};

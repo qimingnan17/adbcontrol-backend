@@ -25,6 +25,10 @@ class UpdateService(
     private val databaseService: DatabaseService,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
+
+    /** 配置的对外服务地址(生成设备侧下载链接时优先于请求 Host 头,防 Host 注入)。 */
+    val configuredServerUrl: String get() = config.serverUrl
+
     private val versions = CopyOnWriteArrayList<VersionManifest>()
     private val reports = CopyOnWriteArrayList<UpdateResultReport>()
 
