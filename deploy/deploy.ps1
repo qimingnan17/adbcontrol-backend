@@ -12,13 +12,24 @@ if (-not (Test-Path $ZipPath)) { throw "zip not found: $ZipPath" }
 Write-Output '[1/5] stopping service...'
 schtasks /end /tn $TaskName 2>&1 | Out-Null
 # the only java process on this box is our backend, safe to kill by name
-Get-Process java -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
+$java = Get-Process java -ErrorAction SilentlyContinue
+if ($java) {
+    $java | Stop-Process -Force -ErrorAction SilentlyContinue
+    $java | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 2
 $ErrorActionPreference = 'Stop'
 
 Write-Output '[2/5] extracting...'
-if (Test-Path "$AppHome\app.old") { Remove-Item "$AppHome\app.old" -Recurse -Force }
-if (Test-Path "$AppHome\app")     { Remove-Item "$AppHome\app" -Recurse -Force }
+if (Test-Path "$AppHome\app.old") { Remove-Item "$AppHome\app.old" -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path "$AppHome\app")     {
+    try {
+        Remove-Item "$AppHome\app" -Recurse -Force -ErrorAction Stop
+    } catch {
+        $rnd = Get-Random
+        Rename-Item "$AppHome\app" "$AppHome\app.old.$rnd" -ErrorAction SilentlyContinue
+    }
+}
 New-Item -ItemType Directory -Path "$AppHome\app" -Force | Out-Null
 tar -xf $ZipPath -C "$AppHome\app"
 if (Test-Path "$AppHome\app\backend\bin\backend.bat") {
