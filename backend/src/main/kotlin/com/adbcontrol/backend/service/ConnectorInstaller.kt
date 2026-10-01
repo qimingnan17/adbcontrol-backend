@@ -130,6 +130,49 @@ class ConnectorInstaller : AutoCloseable {
     }.getOrDefault(false)
 
     /**
+     * 查询已注册的 cloudflared 服务状态。
+     *
+     * @return "RUNNING" / "STOPPED" 等；未安装返回 null。
+     */
+    private fun queryServiceState(): String? {
+        if (!isWindows()) {
+            val out = runCatching {
+                val p = ProcessBuilder("systemctl", "is-active", "cloudflared")
+                    .redirectErrorStream(true).start()
+                val t = p.inputStream.bufferedReader().use { it.readText() }.trim()
+                p.waitFor(10, TimeUnit.SECONDS)
+                if (p.exitValue() == 0) t else null
+            }.getOrDefault(null)
+            return out
+        }
+        val out = runCatching {
+            val p = ProcessBuilder("sc.exe", "query", "cloudflared")
+                .redirectErrorStream(true).start()
+            val t = p.inputStream.bufferedReader().use { it.readText() }
+            p.waitFor(10, TimeUnit.SECONDS)
+            // sc query 对不存在的服务返回 1060 并以非 0 退出
+            if (p.exitValue() == 0) {
+                Regex("STATE\\s*:\\s*(\\d+)\\s+(\\w+)").find(t)?.groupValues?.get(2)
+            } else null
+        }.getOrDefault(null)
+        return out
+    }
+
+    /** 读取服务安装时落盘的连接器 token（判断服务绑的是哪条隧道）。 */
+    private fun readInstalledToken(): String? = runCatching {
+        val candidates = if (isWindows()) {
+            listOf(File("C:\\ProgramData\\cloudflared\\token"))
+        } else {
+            listOf(File("/etc/cloudflared/token"))
+        }
+        candidates.firstOrNull { it.isFile && it.length() < 4096 }?.readText()?.trim()
+    }.getOrNull()
+
+    /** cloudflared 对"服务已存在"的固定措辞。 */
+    private fun looksLikeAlreadyInstalled(output: String): Boolean =
+        output.contains("already installed", ignoreCase = true)
+
+    /**
      * 下载(如缺失)并注册连接器服务。
      *
      * @param tunnelToken Cloudflare 隧道连接器 token(`cloudflared service install` 的参数)。
@@ -177,7 +220,35 @@ class ConnectorInstaller : AutoCloseable {
             if (!isWindows()) runCatching { binary.setExecutable(true) }
         }
 
-        // ---- 2. 注册并启动系统服务 ----
+        // ---- 2. 已装过?先判断,别急着 install ----
+        // cloudflared 遇到已存在的服务会 exit=1 并打印
+        // "cloudflared service is already installed at Cloudflared"。
+        // 此前这被当成安装失败,于是页面上出现"安装未成功"+ 一段英文原始报错,
+        // 而实际上服务早就在跑、隧道早就 healthy —— 纯粹的误报,却极易让人以为
+        // 要去重装甚至重装系统。所以先查服务状态,并比对它绑的隧道是不是同一个。
+        val existingState = queryServiceState()
+        if (existingState != null) {
+            val boundToken = readInstalledToken()
+            val sameTunnel = boundToken != null && boundToken.trim() == tunnelToken.trim()
+            steps.add(ConnectorInstallStep("install", true, "检测到已注册的 cloudflared 服务：$existingState"))
+            return if (sameTunnel) {
+                logger.info("cloudflared service already running with the requested tunnel token")
+                ConnectorInstallOutcome(
+                    true, steps, null,
+                    "连接器服务已在运行，且绑定的就是当前这条隧道，无需重复安装。" +
+                        "若隧道状态仍不是 healthy，请到 Cloudflare 控制台查看。",
+                )
+            } else {
+                ConnectorInstallOutcome(
+                    false, steps,
+                    "C:\\adbcontrol\\cloudflared.exe service uninstall && C:\\adbcontrol\\cloudflared.exe service install <新 token>",
+                    "本机已有一个 cloudflared 服务（$existingState），但它绑定的不是当前这条隧道。" +
+                        "换隧道需要先卸载再装，已给你命令。",
+                )
+            }
+        }
+
+        // ---- 3. 注册并启动系统服务 ----
         val run = runCatching { runInstall(binary, tunnelToken) }
         val exitCode = run.getOrNull()?.first
         val output = run.getOrNull()?.second.orEmpty()
@@ -186,6 +257,16 @@ class ConnectorInstaller : AutoCloseable {
         if (threw != null) {
             steps.add(ConnectorInstallStep("install", false, "执行失败: ${threw.message}"))
             return ConnectorInstallOutcome(false, steps, manual, "启动 cloudflared 安装程序失败，请以管理员身份手动执行下面的命令")
+        }
+
+        // 并发/竞态:查询与 install 之间可能被别人装上了。再兜一次。
+        if (exitCode != 0 && looksLikeAlreadyInstalled(output)) {
+            val state = queryServiceState()
+            steps.add(ConnectorInstallStep("install", true, "服务已存在（cloudflared 报 already installed），当前状态：${state ?: "未知"}"))
+            return ConnectorInstallOutcome(
+                true, steps, null,
+                "连接器服务已存在（${state ?: "状态未知"}），无需重复安装。",
+            )
         }
 
         val installOk = exitCode == 0
