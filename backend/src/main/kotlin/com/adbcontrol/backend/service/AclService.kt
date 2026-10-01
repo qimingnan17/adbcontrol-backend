@@ -97,7 +97,12 @@ class AclService(
 
     /**
      * 移除设备的全部 ACL 规则(删除设备/吊销令牌时调用,best-effort)。
-     * EMQX 列表接口不支持按 username 过滤,拉全量后在后端侧过滤再逐条删除。
+     *
+     * 5.8+ 走按用户名的作用域整体删除;旧版回退为"拉全量列表再逐条删"。
+     * 但回退路径在 EMQX Cloud Serverless 上必然失败(裸 rules 表端点不开放,405),
+     * 此前只留一句 warn 就返回 —— 残留规则会让已删除的设备在重连后仍能收发
+     * 部分 topic。这里补一层兜底:删除该用户的 authorization 记录,
+     * 记录没了,残留 rule 行也匹配不到任何用户,等效失权。
      */
     suspend fun removeForDevice(deviceId: String) {
         val acl = buildDeviceAcl(deviceId)
@@ -109,7 +114,15 @@ class AclService(
         }
         val list = emqx.listAclRules()
         if (list.status !in 200..299) {
-            logger.warn("[ACL] remove rules for {} failed (list HTTP {})", deviceId, list.status)
+            val dropped = emqx.deleteAuthorizationUser(acl.username)
+            if (dropped.status in 200..299) {
+                logger.info("[ACL] removed authorization user for {} (rules endpoint unavailable)", deviceId)
+            } else {
+                logger.warn(
+                    "[ACL] remove rules for {} failed (scoped={} list={} dropUser={})",
+                    deviceId, scoped.status, list.status, dropped.status,
+                )
+            }
             return
         }
         runCatching {

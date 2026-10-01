@@ -472,9 +472,25 @@ class PairingService(
         return had
     }
 
-    /** 删除内存会话 + DB pair_session + EMQX 设备账号与 ACL 规则(后三者 best-effort)。 */
+    /**
+     * 删除内存会话 + DB pair_session + EMQX 设备账号与 ACL 规则,并主动踢掉在线连接。
+     *
+     * 顺序有讲究:先踢连接,再删账号/规则。反过来做的话,被踢后设备会立刻重连,
+     * 而此刻账号还在、规则还在 —— 重连成功,等于没踢。
+     */
     private suspend fun removeSessionAndEmqx(deviceId: String) {
         sessions.remove(deviceId)
+
+        // 1) 先断连接,让端侧立刻感知失联(重连失败后由端侧自行登出)
+        runCatching { emqxProxy.kickDevice(deviceId) }.onSuccess { r ->
+            when {
+                r.status in 200..299 -> logger.info("[KICK] device {} connection kicked", deviceId)
+                r.status == 404 -> logger.info("[KICK] device {} was already offline", deviceId)
+                else -> logger.warn("[KICK] device {} kick returned HTTP {}", deviceId, r.status)
+            }
+        }.onFailure { e -> logger.warn("kickDevice failed for {}: {}", deviceId, e.message) }
+
+        // 2) 再删账号与规则,阻止其重连
         runCatching { databaseService.deletePairSession(deviceId) }
             .onFailure { e -> logger.warn("deletePairSession failed for {}: {}", deviceId, e.message) }
         runCatching { emqxProxy.deleteAuthUser(deviceId) }
