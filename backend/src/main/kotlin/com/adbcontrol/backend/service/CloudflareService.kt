@@ -4,8 +4,10 @@ import com.adbcontrol.backend.model.*
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
@@ -93,6 +95,15 @@ class CloudflareService : AutoCloseable {
                     header("Content-Type", "application/json")
                     if (bodyJson != null) setBody(bodyJson)
                 }
+                // PATCH 用于改写已存在的 DNS 记录（PUT 语义是整条替换，PATCH 只改给定字段）
+                "PATCH" -> httpClient.patch("$cfBase$path") {
+                    header("Authorization", "Bearer ${apiToken.trim()}")
+                    header("Content-Type", "application/json")
+                    if (bodyJson != null) setBody(bodyJson)
+                }
+                "DELETE" -> httpClient.delete("$cfBase$path") {
+                    header("Authorization", "Bearer ${apiToken.trim()}")
+                }
                 else -> return Triple(HttpStatusCode.MethodNotAllowed, null, null)
             }
             val text = response.bodyAsText()
@@ -107,16 +118,19 @@ class CloudflareService : AutoCloseable {
     /**
      * 从 Cloudflare 响应中提取首个错误信息；无法提取时回退到默认描述。
      */
-    private fun JsonObject?.cfErrorOrDefault(fallback: String): String {
-        val root = this ?: return fallback
-        if (root["success"]?.jsonPrimitive?.booleanOrNull == true) return fallback
+    private fun JsonObject?.cfErrorOrDefault(fallback: String): String = cfErrorText().ifBlank { fallback }
+
+    /** 从 Cloudflare 响应中提取首个错误信息；无错误信息时返回空串。 */
+    private fun JsonObject?.cfErrorText(): String {
+        val root = this ?: return ""
+        if (root["success"]?.jsonPrimitive?.booleanOrNull == true) return ""
         val first = (root["errors"] as? JsonArray)?.firstOrNull() as? JsonObject
         val msg = first?.get("message")?.jsonPrimitive?.contentOrNull
         val code = first?.get("code")?.jsonPrimitive?.contentOrNull
         return when {
             msg != null && code != null -> "[$code] $msg"
             msg != null -> msg
-            else -> fallback
+            else -> ""
         }
     }
 
@@ -395,28 +409,86 @@ class CloudflareService : AutoCloseable {
     }
 
     /**
-     * 将 hostname 通过 DNS 路由绑定到隧道：Cloudflare 自动创建指向 {tunnelId}.cfargotunnel.com 的代理 CNAME。
-     * 需要 Token 含有「Cloudflare Tunnel:Edit」权限，且域名托管在该账户下。
+     * 将 hostname 通过 DNS 记录绑定到隧道：在 zone 下创建一条 proxied CNAME，
+     * content 指向 `{tunnelId}.cfargotunnel.com`。
+     *
+     * 为什么不用 `POST /accounts/{id}/cfd_tunnel/{tid}/routes/dns`：
+     * 那是旧的「DNS 路由」接口，Cloudflare 已下线 —— 实测返回
+     * `HTTP/1.1 404 Not Found` 且 `Content-Length: 0`（空响应体）。
+     * 由于响应体不是 JSON，[cfExchange] 解析得到 null，最终只会抛出一句
+     * 无信息量的「连接 Cloudflare API 异常」，把 404 掩盖成网络故障。
+     * 现在统一走 zone 的 dns_records 接口。
+     *
+     * 幂等：记录已存在且指向同一隧道时视为成功（重跑「添加主机名」不应报错）。
+     * 记录存在但指向别处则改写 content —— 否则用户换隧道后会一直打到旧隧道。
+     *
+     * 需要 Token 含有「区域 DNS:Edit」权限，且域名托管在该账户下。
      */
     suspend fun bindTunnelDnsRoute(
         apiToken: String,
-        accountId: String,
+        zoneId: String,
         tunnelId: String,
         hostname: String
     ): CfWriteResult {
-        val body = buildJsonObject { put("name", hostname) }.toString()
-        val (status, root, _) = cfExchange(
-            "POST", "/accounts/$accountId/cfd_tunnel/$tunnelId/routes/dns", apiToken, body
-        )
-        if (root == null) return CfWriteResult(false, "连接 Cloudflare API 异常")
-        if (status != HttpStatusCode.OK || root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+        val target = "$tunnelId.cfargotunnel.com"
+        val host = hostname.trim().lowercase()
+        val body = buildJsonObject {
+            put("type", "CNAME")
+            put("name", host)
+            put("content", target)
+            put("proxied", true)
+            put("ttl", 1)
+        }.toString()
+
+        val (status, root, text) = cfExchange("POST", "/zones/$zoneId/dns_records", apiToken, body)
+
+        if (root == null) {
+            // 区分「HTTP 层就失败了」与「响应体不是 JSON」——后者通常是 CF 返回空体
             return CfWriteResult(
                 false,
-                root.cfErrorOrDefault("HTTP ${status.value}：请确认 Token 含有「区域 DNS:Edit」权限且域名托管在该账户")
+                "Cloudflare 返回 HTTP ${status.value} 且响应体为空或非 JSON，无法解析" +
+                    (if (text.isNullOrBlank()) "" else "：${text.take(200)}")
             )
         }
-        return CfWriteResult(true, "已创建 $hostname 的隧道 CNAME 记录")
+        if (status == HttpStatusCode.OK && root["success"]?.jsonPrimitive?.booleanOrNull == true) {
+            return CfWriteResult(true, "已创建 $host 的隧道 CNAME 记录")
+        }
+
+        // 记录已存在：查一下当前指向，指向同一隧道即视为成功，否则改写
+        val errCode = ((root["errors"] as? JsonArray)?.firstOrNull() as? JsonObject)
+            ?.get("code")?.jsonPrimitive?.intOrNull
+        if (errCode == 81057 || root.cfErrorText().contains("already exists", ignoreCase = true)) {
+            val existing = findDnsRecord(apiToken, zoneId, host)
+            if (existing != null && existing.content.equals(target, ignoreCase = true)) {
+                return CfWriteResult(true, "$host 的 CNAME 已存在且指向本隧道")
+            }
+            val updBody = buildJsonObject {
+                put("type", "CNAME"); put("name", host); put("content", target)
+                put("proxied", true); put("ttl", 1)
+            }.toString()
+            val (uStatus, uRoot, _) = cfExchange("PATCH", "/zones/$zoneId/dns_records/${existing?.id ?: ""}", apiToken, updBody)
+            return if (uStatus == HttpStatusCode.OK && uRoot?.get("success")?.jsonPrimitive?.booleanOrNull == true) {
+                CfWriteResult(true, "已更新 $host 的 CNAME，改指向本隧道")
+            } else {
+                CfWriteResult(false, "$host 已存在指向其他目标的记录，自动改写失败：${uRoot.cfErrorOrDefault("HTTP ${uStatus.value}")}")
+            }
+        }
+
+        return CfWriteResult(
+            false,
+            root.cfErrorOrDefault("HTTP ${status.value}：请确认 Token 含有「区域 DNS:Edit」权限且域名托管在该账户")
+        )
     }
+
+    /** 读取 zone 下指定 hostname 的 CNAME 记录，找不到返回 null。 */
+    private suspend fun findDnsRecord(apiToken: String, zoneId: String, hostname: String): CfDnsRecord? {
+        val (status, root, _) = cfExchange("GET", "/zones/$zoneId/dns_records?type=CNAME&name=$hostname", apiToken)
+        if (root == null || status != HttpStatusCode.OK) return null
+        val arr = root["result"] as? JsonArray ?: return null
+        return arr.firstOrNull()?.jsonObject?.let { CfDnsRecord(it["id"]?.jsonPrimitive?.contentOrNull ?: "", it["content"]?.jsonPrimitive?.contentOrNull ?: "") }
+    }
+
+    private data class CfDnsRecord(val id: String, val content: String)
 
     /**
      * 获取隧道连接器 Token（用于云电脑上执行 cloudflared service install <token>）。
