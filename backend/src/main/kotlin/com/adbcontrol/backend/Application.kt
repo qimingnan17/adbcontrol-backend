@@ -90,6 +90,12 @@ fun Application.module() {
         }
     }
     install(CallLogging)
+    // 把对外地址透传给 CORS 插件:浏览器对同源子资源请求(静态 js/css)同样会带
+    // Origin,若该地址不在白名单里,所有 /assets/* 会被判为非法来源返回 403,
+    // 表现为"页面打开一片空白"。见 plugin/Cors.kt。
+    if (config.serverUrl.isNotBlank()) {
+        System.setProperty("adbcontrol.server.url", config.serverUrl)
+    }
     configureCors()
     install(StatusPages) {
         exception<Throwable> { call, cause ->
