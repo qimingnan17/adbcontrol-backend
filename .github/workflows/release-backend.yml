@@ -20,6 +20,11 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # CLOUD_PC_UPGRADE_URL / UPGRADE_TOKEN 配在 production environment 下。
+    # GitHub 只在 job 显式声明该 environment 时才注入 environment 级 Secret,
+    # 不声明的话 secrets.CLOUD_PC_UPGRADE_URL 恒为空,Notify 步骤会一直静默跳过
+    # (表现为"CI 跑完了但云电脑要等 10 分钟轮询才更新)。
+    environment: production
 
     steps:
       - name: Checkout code
