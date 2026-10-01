@@ -978,7 +978,7 @@ fun Route.settingsRoutes(
                 }
 
                 // 5. 绑定 DNS 路由（决定性步骤）
-                val dns = cfService.bindTunnelDnsRoute(token, accountId, tunnelId, hostname)
+                val dns = cfService.bindTunnelDnsRoute(token, zone.id, tunnelId, hostname)
                 steps.add(CfProvisionStep("bind_dns", dns.ok, dns.message))
                 if (!dns.ok) {
                     call.respond(
