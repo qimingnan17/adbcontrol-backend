@@ -62,7 +62,72 @@ class ConnectorInstaller : AutoCloseable {
 
     /** 供前端展示的手动命令(token 由调用方拼,这里只给可复制的兜底文本)。 */
     fun manualCommand(token: String): String =
-        "${binaryFile.absolutePath} service install $token"
+        "${resolvedBinary().absolutePath} service install $token"
+
+    /** 实际会使用的二进制:优先本地已有(见 [findLocalBinary]),否则回落到安装目录。 */
+    private fun resolvedBinary(): File {
+        findLocalBinary()?.let { return it }
+        return binaryFile
+    }
+
+    /**
+     * 查找本机已存在的 cloudflared，命中就不下载。
+     *
+     * 为什么需要：国内网络直连 GitHub Releases 基本会超时，而 cloudflared 往往
+     * 已经由运维手工放在应用目录里（实测 C:\adbcontrol\cloudflared.exe 就有一份
+     * 52MB 的 2026.9.3）。原先只检查 installDir 下的固定文件名，那个目录是空的，
+     * 于是明明本地有可用二进制，却仍去下载并超时失败。
+     *
+     * 命中判据不止体积：还要能真的执行 `--version`。否则一个被截断的 .exe 会被
+     * 当成"已安装"，等到 service install 阶段才以更费解的方式失败。
+     */
+    private fun findLocalBinary(): File? {
+        val exeName = if (isWindows()) "cloudflared.exe" else "cloudflared"
+        val appHome = installDir.parentFile
+        // 注意:所有 add 都必须留在 buildList 的 lambda 内。runCatching 的接收者是
+        // Result,一旦在它的 lambda 里调用 add 就会因接收者遮蔽而编译失败。
+        val pathDirs = runCatching {
+            (System.getenv("PATH") ?: "").split(File.pathSeparatorChar).filter { it.isNotBlank() }
+        }.getOrDefault(emptyList())
+        val subDirs = if (appHome != null) {
+            runCatching { appHome.listFiles() }.getOrNull()?.filter { it.isDirectory }.orEmpty()
+        } else {
+            emptyList()
+        }
+
+        val candidates = buildList {
+            // 1) 安装目录(本类自己下载时落地的地方)
+            add(File(installDir, exeName))
+            if (appHome != null) {
+                // 2) 应用目录根部 —— 实测运维常把二进制直接放这儿
+                add(File(appHome, exeName))
+                // 3) 应用目录下一层(如 C:\adbcontrol\tools\cloudflared.exe)
+                subDirs.forEach { dir -> add(File(dir, exeName)) }
+            }
+            // 4) PATH 上已安装的(winget / scoop / 手工加 PATH)
+            pathDirs.forEach { add(File(it, exeName)) }
+        }
+
+        var firstOversized: File? = null
+        for (c in candidates.distinctBy { it.absolutePath.lowercase() }) {
+            if (!c.isFile) continue
+            if (c.length() <= MIN_BINARY_BYTES) continue
+            if (firstOversized == null) firstOversized = c
+            if (looksRunnable(c)) return c
+        }
+        // 体积够但跑不起来 —— 记下来当候选，至少比"什么都没有"强，但要在日志里点出来
+        firstOversized?.let { logger.warn("found cloudflared at {} but --version failed, ignoring", it) }
+        return null
+    }
+
+    /** 执行 `--version` 验证二进制真的可用(退出码 0 且输出含版本字样)。 */
+    private fun looksRunnable(binary: File): Boolean = runCatching {
+        val p = ProcessBuilder(binary.absolutePath, "--version")
+            .redirectErrorStream(true).start()
+        val out = p.inputStream.bufferedReader().use { it.readText() }
+        p.waitFor(10, TimeUnit.SECONDS) && p.exitValue() == 0 &&
+            out.contains("cloudflared", ignoreCase = true)
+    }.getOrDefault(false)
 
     /**
      * 下载(如缺失)并注册连接器服务。
@@ -78,22 +143,32 @@ class ConnectorInstaller : AutoCloseable {
         }
 
         // ---- 1. 准备二进制 ----
-        val binary = binaryFile
-        if (binary.isFile && binary.length() > MIN_BINARY_BYTES) {
-            steps.add(ConnectorInstallStep("download", true, "已存在 ${binary.absolutePath}"))
+        val local = findLocalBinary()
+        val binary = local ?: binaryFile
+        if (local != null) {
+            val via = if (local.absolutePath.equals(binaryFile.absolutePath, ignoreCase = true)) "安装目录" else "本机已有"
+            steps.add(ConnectorInstallStep("download", true, "$via：${local.absolutePath}（跳过下载）"))
         } else {
-            val url = downloadUrl()
-            if (url == null) {
+            val urls = downloadUrls()
+            if (urls.isEmpty()) {
                 steps.add(ConnectorInstallStep("download", false, "当前平台不支持自动下载，请手动安装 cloudflared"))
                 return ConnectorInstallOutcome(false, steps, manual, "当前平台不支持自动安装 cloudflared，请手动执行下面的命令")
             }
-            val dl = runCatching { download(url, binary) }
-            val ok = dl.getOrDefault(false)
+            var lastErr = "所有下载源均失败"
+            var ok = false
+            var usedUrl = ""
+            for (url in urls) {
+                val dl = runCatching { download(url, binary) }
+                if (dl.getOrDefault(false)) {
+                    ok = true; usedUrl = url; break
+                }
+                lastErr = dl.exceptionOrNull()?.message ?: lastErr
+                logger.warn("cloudflared download failed from {}: {}", url, lastErr)
+            }
             steps.add(
                 ConnectorInstallStep(
                     "download", ok,
-                    if (ok) "$url → ${binary.absolutePath}（${binary.length() / 1024 / 1024}MB）"
-                    else (dl.exceptionOrNull()?.message ?: "下载失败"),
+                    if (ok) "$usedUrl → ${binary.absolutePath}（${binary.length() / 1024 / 1024}MB）" else lastErr
                 )
             )
             if (!ok) {
@@ -185,13 +260,29 @@ class ConnectorInstaller : AutoCloseable {
     private fun isWindows(): Boolean =
         System.getProperty("os.name")?.contains("Windows", ignoreCase = true) == true
 
-    private fun downloadUrl(): String? {
+    /**
+     * 下载源列表(按优先级)。
+     *
+     * 前面几个是 GitHub 加速代理:国内机器直连 github.com/releases 普遍超时,
+     * 而 update-poll.ps1 拉后端包走的正是这几个代理(已实测可用),所以复用同一组,
+     * 避免"后端包能拉、连接器却拉不下来"的割裂体验。官方直连放最后兜底。
+     */
+    private fun downloadUrls(): List<String> {
+        val asset = releaseAsset() ?: return emptyList()
+        return buildList {
+            GITHUB_PROXIES.forEach { add(it.trimEnd('/') + "/" + RELEASE_PATH + "/" + asset) }
+            add("$RELEASE_BASE/$asset")
+        }
+    }
+
+    /** 当前平台对应的官方发布资产名；不支持的平台返回 null。 */
+    private fun releaseAsset(): String? {
         val os = System.getProperty("os.name")?.lowercase().orEmpty()
         val arch = System.getProperty("os.arch")?.lowercase().orEmpty()
         val arm = arch.contains("aarch64") || arch.contains("arm64")
         return when {
-            os.contains("win") -> "$RELEASE_BASE/" + if (arm) "cloudflared-windows-arm64.exe" else "cloudflared-windows-amd64.exe"
-            os.contains("linux") -> "$RELEASE_BASE/" + if (arm) "cloudflared-linux-arm64" else "cloudflared-linux-amd64"
+            os.contains("win") -> if (arm) "cloudflared-windows-arm64.exe" else "cloudflared-windows-amd64.exe"
+            os.contains("linux") -> if (arm) "cloudflared-linux-arm64" else "cloudflared-linux-amd64"
             // darwin 官方分发为 .tgz,需要解压,这里不处理
             else -> null
         }
@@ -203,6 +294,14 @@ class ConnectorInstaller : AutoCloseable {
 
     private companion object {
         const val RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+        const val RELEASE_PATH = "cloudflare/cloudflared/releases/latest/download"
+
+        /** 与 deploy/update-poll.ps1 同一组加速代理，已实测从本项目云电脑可达。 */
+        val GITHUB_PROXIES = listOf(
+            "https://ghfast.top/",
+            "https://gh-proxy.com/",
+            "https://ghproxy.net/",
+        )
 
         /** cloudflared 二进制约 40MB;低于此值必然是错误页或被拦截。 */
         const val MIN_BINARY_BYTES = 1L * 1024 * 1024

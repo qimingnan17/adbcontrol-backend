@@ -939,20 +939,38 @@ fun Route.settingsRoutes(
                     val newName = tunnelName.ifBlank { "adbcontrol" }
                     val created = cfService.createTunnel(token, accountId, newName)
                     val newId = created.tunnelId
-                    steps.add(CfProvisionStep("create_tunnel", created.ok, created.message))
-                    if (!created.ok || newId.isNullOrBlank()) {
-                        call.respond(
-                            CfProvisionTunnelResponse(
-                                ok = false,
-                                hostname = hostname,
-                                steps = steps,
-                                message = "创建隧道失败：${created.message ?: "未知错误"}"
+                    if (created.ok && !newId.isNullOrBlank()) {
+                        steps.add(CfProvisionStep("create_tunnel", true, "已新建隧道「$newName」"))
+                        tunnelId = newId
+                        tunnelName = newName
+                    } else {
+                        // Cloudflare 不允许账户内隧道重名，报 1013。首次绑定、或换了台
+                        // 机器想复用同名隧道时都会撞上。此时按名字回查并复用，把
+                        // "请改个名或先删掉" 这种需要用户理解 CF 错误码的负担去掉。
+                        val existing = cfService.fetchTunnels(token, accountId).data
+                            ?.firstOrNull { it.name.equals(newName, ignoreCase = true) }
+                        if (existing != null) {
+                            tunnelId = existing.id
+                            tunnelName = existing.name
+                            steps.add(
+                                CfProvisionStep(
+                                    "create_tunnel", true,
+                                    "已存在同名隧道「${existing.name}」，直接复用（未重复创建）"
+                                )
                             )
-                        )
-                        return@post
+                        } else {
+                            steps.add(CfProvisionStep("create_tunnel", false, created.message ?: "未知错误"))
+                            call.respond(
+                                CfProvisionTunnelResponse(
+                                    ok = false,
+                                    hostname = hostname,
+                                    steps = steps,
+                                    message = "创建隧道失败：${created.message ?: "未知错误"}"
+                                )
+                            )
+                            return@post
+                        }
                     }
-                    tunnelId = newId
-                    tunnelName = newName
                 } else {
                     if (tunnelName.isBlank()) {
                         tunnelName = cfService.fetchTunnels(token, accountId).data
@@ -1065,8 +1083,19 @@ fun Route.settingsRoutes(
                         )
                     )
                 } else {
+                    // 1013 = 账户内隧道重名。直接回一个「该隧道已存在，请从下拉里选它」
+                    // 更有用的消息,而不是让用户去解读 Cloudflare 英文错误码。
+                    val dup = cfService.fetchTunnels(token, accounts.first().id).data
+                        ?.firstOrNull { it.name.equals(name, ignoreCase = true) }
                     call.respond(
-                        SettingsOperationResponse(ok = false, message = created.message ?: "创建隧道失败")
+                        SettingsOperationResponse(
+                            ok = false,
+                            message = if (dup != null) {
+                                "已存在名为「${dup.name}」的隧道（${dup.status}），请到「添加主机名」直接从隧道列表里选它，无需新建"
+                            } else {
+                                created.message ?: "创建隧道失败"
+                            }
+                        )
                     )
                 }
             }
