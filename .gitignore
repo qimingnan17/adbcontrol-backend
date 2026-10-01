@@ -15,4 +15,5 @@ out/
 *.iml
 .DS_Store
 deploy/gh_deploy_key*
+deploy/AdbControlDeploy.exe
 .mimosa/

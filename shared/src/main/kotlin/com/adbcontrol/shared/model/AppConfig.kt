@@ -60,6 +60,11 @@ data class R2Config(
     val accessSecret: String,
     /** bucket 是否 public read,主控可直接 GET URL */
     val publicRead: Boolean = true,
+    /**
+     * 对象公开访问基地址(如 r2.dev 域名 https://pub-xxxx.r2.dev)。
+     * 为空时回退用 [endpoint] 拼 URL(历史行为)。
+     */
+    val publicBaseUrl: String = "",
 )
 
 @Serializable

@@ -10,12 +10,9 @@ import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
-import io.ktor.client.request.forms.submitForm
-import io.ktor.http.Parameters
 import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
-import java.util.Base64
 
 /** 单类 Cloudflare 资源的探测结果：error 非空表示读取失败（向前端透出真实原因，不再静默吞错） */
 data class CfFetchResult<T>(val data: T?, val error: String? = null)
@@ -156,7 +153,11 @@ class CloudflareService : AutoCloseable {
             val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val st = obj["status"]?.jsonPrimitive?.contentOrNull ?: "active"
-            CfZone(id = id, name = name, status = st)
+            // /zones 每个元素都带 account 子对象;带上它才能把隧道/DNS 绑到正确的账户
+            val account = obj["account"] as? JsonObject
+            val accountId = account?.get("id")?.jsonPrimitive?.contentOrNull ?: ""
+            val accountName = account?.get("name")?.jsonPrimitive?.contentOrNull ?: ""
+            CfZone(id = id, name = name, status = st, accountId = accountId, accountName = accountName)
         } ?: emptyList()
         return CfFetchResult(zones)
     }
@@ -223,23 +224,7 @@ class CloudflareService : AutoCloseable {
     }
 
     /**
-     * 获取账户下的 Cloudflare Zero Trust Access Organization (Team Domain)。
-     */
-    suspend fun fetchAccessOrg(apiToken: String, accountId: String): CfFetchResult<CfAccessOrg?> {
-        val (status, root, _) = cfExchange("GET", "/accounts/$accountId/access/organizations", apiToken)
-        if (root == null) return CfFetchResult(null, "连接 Cloudflare API 异常")
-        if (status != HttpStatusCode.OK || root["success"]?.jsonPrimitive?.booleanOrNull != true) {
-            return CfFetchResult(null, root.cfErrorOrDefault("HTTP ${status.value}：Token 缺少「访问:组织、标识提供程序和组:Read」权限"))
-        }
-        val result = root["result"] as? JsonObject
-        val authDomain = result?.get("auth_domain")?.jsonPrimitive?.contentOrNull
-            ?: return CfFetchResult(null, "账户尚未启用 Zero Trust Access 组织")
-        val name = result["name"]?.jsonPrimitive?.contentOrNull ?: ""
-        return CfFetchResult(CfAccessOrg(name = name, authDomain = authDomain))
-    }
-
-    /**
-     * 自动聚合拉取 Cloudflare 所有的授权资源：账户、Access Org、域名、隧道、R2 桶、D1 数据库。
+     * 自动聚合拉取 Cloudflare 所有的授权资源：账户、域名、隧道、R2 桶、D1 数据库。
      * 各类资源的失败原因会汇总到 errors 字段，前端据此展示真实错误而不是笼统的"未获取到"。
      */
     suspend fun fetchAllResources(apiToken: String): CfAllResources {
@@ -260,18 +245,11 @@ class CloudflareService : AutoCloseable {
         val tunnels = mutableListOf<CfTunnel>()
         val r2Buckets = mutableListOf<CfR2Bucket>()
         val d1Databases = mutableListOf<CfD1Database>()
-        var accessOrg: CfAccessOrg? = null
-        var accessOrgError: String? = null
         val tunnelsErrors = mutableListOf<String>()
         val r2Errors = mutableListOf<String>()
         val d1Errors = mutableListOf<String>()
 
         for (acc in accounts) {
-            if (accessOrg == null && accessOrgError == null) {
-                val orgRes = fetchAccessOrg(apiToken, acc.id)
-                accessOrg = orgRes.data
-                accessOrgError = orgRes.error
-            }
             fetchTunnels(apiToken, acc.id).let {
                 it.data?.let { list -> tunnels.addAll(list) }
                 it.error?.let { err -> tunnelsErrors.add(err) }
@@ -291,15 +269,13 @@ class CloudflareService : AutoCloseable {
             zones = zonesRes.error,
             tunnels = tunnelsErrors.joinToString("；").ifBlank { null },
             r2 = r2Errors.joinToString("；").ifBlank { null },
-            d1 = d1Errors.joinToString("；").ifBlank { null },
-            accessOrg = accessOrgError
+            d1 = d1Errors.joinToString("；").ifBlank { null }
         )
 
         return CfAllResources(
             valid = true,
             tokenInfo = tokenInfo,
             accounts = accounts,
-            accessOrg = accessOrg,
             zones = zones,
             tunnels = tunnels,
             r2Buckets = r2Buckets,
@@ -451,86 +427,196 @@ class CloudflareService : AutoCloseable {
         return root["result"]?.jsonPrimitive?.contentOrNull
     }
 
+    // ==================== R2 全自动配置 ====================
+
     /**
-     * 通过 Cloudflare Zero Trust (Access) OIDC 授权码置换身份信息。
+     * 列出适用于账户 API Token 的权限组(创建 token 时必须按 id 引用)。
+     * 不能写死 id —— Cloudflare 的权限组 id 是不透明的,不同账户/时间点可能不同。
      */
-    suspend fun exchangeOidcCode(
-        teamDomain: String,
-        clientId: String,
-        clientSecret: String,
-        code: String,
-        redirectUri: String
-    ): Pair<Boolean, CfOidcUserInfo?> {
-        val domain = teamDomain.trim()
-            .removePrefix("https://")
-            .removePrefix("http://")
-            .trimEnd('/')
-            .substringBefore("/cdn-cgi")
-
-        val tokenUrl = "https://$domain/cdn-cgi/access/sso/oidc/$clientId/token"
-        return try {
-            val response = httpClient.submitForm(
-                url = tokenUrl,
-                formParameters = Parameters.build {
-                    append("grant_type", "authorization_code")
-                    append("client_id", clientId.trim())
-                    append("client_secret", clientSecret.trim())
-                    append("code", code.trim())
-                    append("redirect_uri", redirectUri.trim())
-                }
-            )
-            val text = response.bodyAsText()
-            if (response.status != HttpStatusCode.OK) {
-                logger.warn("OIDC token exchange failed: {} {}", response.status, text)
-                return false to null
-            }
-            val root = json.parseToJsonElement(text).jsonObject
-            val accessToken = root["access_token"]?.jsonPrimitive?.contentOrNull
-            val idToken = root["id_token"]?.jsonPrimitive?.contentOrNull
-
-            var email: String? = null
-            var name: String? = null
-            var sub: String? = null
-
-            // 1. 尝试从 userinfo 接口拉取
-            if (!accessToken.isNullOrBlank()) {
-                try {
-                    val userinfoUrl = "https://$domain/cdn-cgi/access/sso/oidc/$clientId/userinfo"
-                    val userinfoResp = httpClient.get(userinfoUrl) {
-                        header("Authorization", "Bearer $accessToken")
-                    }
-                    if (userinfoResp.status == HttpStatusCode.OK) {
-                        val uRoot = json.parseToJsonElement(userinfoResp.bodyAsText()).jsonObject
-                        email = uRoot["email"]?.jsonPrimitive?.contentOrNull
-                        name = uRoot["name"]?.jsonPrimitive?.contentOrNull
-                        sub = uRoot["sub"]?.jsonPrimitive?.contentOrNull
-                    }
-                } catch (e: Exception) {
-                    logger.warn("OIDC userinfo fetch failed, falling back to id_token", e)
-                }
-            }
-
-            // 2. 兜底策略：直接解析 id_token JWT payload
-            if (email.isNullOrBlank() && !idToken.isNullOrBlank()) {
-                val parts = idToken.split(".")
-                if (parts.size >= 2) {
-                    val payloadBytes = Base64.getUrlDecoder().decode(parts[1])
-                    val idRoot = json.parseToJsonElement(payloadBytes.decodeToString()).jsonObject
-                    email = idRoot["email"]?.jsonPrimitive?.contentOrNull
-                    name = idRoot["name"]?.jsonPrimitive?.contentOrNull ?: name
-                    sub = idRoot["sub"]?.jsonPrimitive?.contentOrNull ?: sub
-                }
-            }
-
-            if (!email.isNullOrBlank()) {
-                true to CfOidcUserInfo(email = email, name = name, sub = sub)
-            } else {
-                false to null
-            }
-        } catch (e: Exception) {
-            logger.error("OIDC exchange error", e)
-            false to null
+    suspend fun listAccountTokenPermissionGroups(
+        apiToken: String,
+        accountId: String,
+    ): CfFetchResult<List<CfPermissionGroup>> {
+        val (status, root, _) = cfExchange("GET", "/accounts/$accountId/tokens/permission_groups", apiToken)
+        if (root == null) return CfFetchResult(null, "连接 Cloudflare API 异常（网络不通或超时）")
+        if (status != HttpStatusCode.OK || root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return CfFetchResult(null, root.cfErrorOrDefault("HTTP ${status.value}：Token 缺少「Account API Tokens:Edit」权限"))
         }
+        val list = (root["result"] as? JsonArray)?.mapNotNull { el ->
+            val obj = el as? JsonObject ?: return@mapNotNull null
+            val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val scopes = (obj["scopes"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+            CfPermissionGroup(id = id, name = name, scopes = scopes)
+        } ?: emptyList()
+        return CfFetchResult(list)
+    }
+
+    /** 在账户下创建 R2 存储桶(已存在时由调用方按幂等处理)。 */
+    suspend fun createR2Bucket(apiToken: String, accountId: String, name: String): CfWriteResult {
+        val body = buildJsonObject { put("name", name) }.toString()
+        val (status, root, _) = cfExchange("POST", "/accounts/$accountId/r2/buckets", apiToken, body)
+        if (root == null) return CfWriteResult(false, "连接 Cloudflare API 异常")
+        if (status != HttpStatusCode.OK && status != HttpStatusCode.Created) {
+            return CfWriteResult(false, root.cfErrorOrDefault("HTTP ${status.value}：请确认 Token 含有「Workers R2 Storage:Edit」权限"))
+        }
+        if (root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return CfWriteResult(false, root.cfErrorOrDefault("创建 R2 存储桶失败"))
+        }
+        return CfWriteResult(true, "存储桶 $name 已创建")
+    }
+
+    /** 列出账户下已有的 R2 存储桶名称(建桶前判断是否已存在,保证幂等)。 */
+    suspend fun r2BucketExists(apiToken: String, accountId: String, name: String): Boolean {
+        val (status, root, _) = cfExchange("GET", "/accounts/$accountId/r2/buckets", apiToken)
+        if (root == null || status != HttpStatusCode.OK) return false
+        val buckets = (root["result"] as? JsonObject)?.get("buckets") as? JsonArray ?: return false
+        return buckets.any { it.jsonObject["name"]?.jsonPrimitive?.contentOrNull == name }
+    }
+
+    /**
+     * 开启 R2 桶的 r2.dev 托管公共域名,返回形如 `https://pub-xxxx.r2.dev` 的基地址。
+     * 注:r2.dev 有速率限制,仅适合开发/轻量场景;正式对外建议换自定义域名。
+     */
+    suspend fun enableR2ManagedDomain(
+        apiToken: String,
+        accountId: String,
+        bucket: String,
+    ): CfFetchResult<String> {
+        val body = buildJsonObject { put("enabled", true) }.toString()
+        val (status, root, _) = cfExchange(
+            "PUT", "/accounts/$accountId/r2/buckets/$bucket/domains/managed", apiToken, body,
+        )
+        if (root == null) return CfFetchResult(null, "连接 Cloudflare API 异常")
+        if (status != HttpStatusCode.OK || root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return CfFetchResult(null, root.cfErrorOrDefault("HTTP ${status.value}：开启 r2.dev 公共域名失败"))
+        }
+        val domain = (root["result"] as? JsonObject)?.get("domain")?.jsonPrimitive?.contentOrNull
+            ?: return CfFetchResult(null, "r2.dev 域名已开启但未返回域名")
+        return CfFetchResult("https://$domain")
+    }
+
+    /**
+     * 创建**账户级 API Token**,并限定只能读写指定 R2 桶。
+     *
+     * 这是拿到 R2 S3 凭据的唯一程序化路径(OAuth 票据没有 API Tokens:Write scope):
+     * 需要一个带「Account API Tokens:Edit」的 bootstrap token 来调本接口。
+     *
+     * 返回的 [CfCreatedToken.value] **只返回一次**,之后再也取不到;
+     * 对应的 S3 Secret Access Key = SHA-256 hex(value),Access Key ID = id。
+     */
+    suspend fun createBucketScopedToken(
+        bootstrapToken: String,
+        accountId: String,
+        tokenName: String,
+        bucket: String,
+        permissionGroupId: String,
+    ): Pair<CfCreatedToken?, String?> {
+        // 桶级资源键格式见官方文档:com.cloudflare.edge.r2.bucket.<ACCOUNT_ID>_<JURISDICTION>_<BUCKET>
+        // 默认法域为 default
+        val resourceKey = "com.cloudflare.edge.r2.bucket.${accountId}_default_$bucket"
+        val body = buildJsonObject {
+            put("name", tokenName)
+            putJsonArray("policies") {
+                addJsonObject {
+                    put("effect", "allow")
+                    putJsonObject("resources") { put(resourceKey, "*") }
+                    putJsonArray("permission_groups") {
+                        addJsonObject { put("id", permissionGroupId) }
+                    }
+                }
+            }
+        }.toString()
+
+        val (status, root, _) = cfExchange("POST", "/accounts/$accountId/tokens", bootstrapToken, body)
+        if (root == null) return null to "连接 Cloudflare API 异常"
+        if (status != HttpStatusCode.OK && status != HttpStatusCode.Created) {
+            return null to root.cfErrorOrDefault("HTTP ${status.value}：请确认 bootstrap token 含有「Account API Tokens:Edit」权限")
+        }
+        if (root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return null to root.cfErrorOrDefault("创建 R2 访问凭据失败")
+        }
+        val result = root["result"] as? JsonObject ?: return null to "创建成功但响应缺少 result"
+        val id = result["id"]?.jsonPrimitive?.contentOrNull ?: return null to "创建成功但未返回 token id"
+        val value = result["value"]?.jsonPrimitive?.contentOrNull ?: return null to "创建成功但未返回 token value"
+        return CfCreatedToken(id = id, value = value) to null
+    }
+
+    /**
+     * 给 R2 桶绑自定义域名（POST .../r2/buckets/{bucket}/domains/custom）。
+     *
+     * 前置条件:[domain] 必须是托管在本账户下的 Cloudflare 域名的子域 ——
+     * Cloudflare 会自动创建指向桶的 DNS 记录并签发证书,无需手工干预。
+     * 相比 r2.dev 托管域,自定义域名没有可变速率限制,适合生产使用。
+     *
+     * 返回 domain 与 status(ownership/ssl 是否 active)。
+     */
+    suspend fun bindR2CustomDomain(
+        apiToken: String,
+        accountId: String,
+        bucket: String,
+        domain: String,
+        zoneId: String,
+    ): CfFetchResult<CfR2CustomDomain> {
+        val body = buildJsonObject {
+            put("domain", domain.trim())
+            put("enabled", true)
+            put("zoneId", zoneId.trim())
+        }.toString()
+        val (status, root, _) = cfExchange(
+            "POST", "/accounts/$accountId/r2/buckets/$bucket/domains/custom", apiToken, body,
+        )
+        if (root == null) return CfFetchResult(null, "连接 Cloudflare API 异常")
+        if (status != HttpStatusCode.OK && status != HttpStatusCode.Created) {
+            return CfFetchResult(null, root.cfErrorOrDefault("HTTP ${status.value}：绑定自定义域失败（域名需托管在本账户且未被占用）"))
+        }
+        if (root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return CfFetchResult(null, root.cfErrorOrDefault("绑定自定义域失败"))
+        }
+        val result = root["result"] as? JsonObject
+            ?: return CfFetchResult(null, "绑定成功但响应缺少 result")
+        val d = result["domain"]?.jsonPrimitive?.contentOrNull
+            ?: return CfFetchResult(null, "绑定成功但未返回域名")
+        val enabled = result["enabled"]?.jsonPrimitive?.booleanOrNull ?: true
+        val st = result["status"] as? JsonObject
+        return CfFetchResult(
+            CfR2CustomDomain(
+                domain = d,
+                enabled = enabled,
+                ownership = st?.get("ownership")?.jsonPrimitive?.contentOrNull ?: "pending",
+                ssl = st?.get("ssl")?.jsonPrimitive?.contentOrNull ?: "initializing",
+            )
+        )
+    }
+
+    /**
+     * 查询 R2 桶自定义域的就绪状态（ownership 与 SSL 证书是否已 active）。
+     * 刚绑定时通常是 pending/initializing，需要等几十秒再查。
+     */
+    suspend fun getR2CustomDomainStatus(
+        apiToken: String,
+        accountId: String,
+        bucket: String,
+        domain: String,
+    ): CfFetchResult<CfR2CustomDomain> {
+        val (status, root, _) = cfExchange(
+            "GET", "/accounts/$accountId/r2/buckets/$bucket/domains/custom/${domain.trim()}", apiToken,
+        )
+        if (root == null) return CfFetchResult(null, "连接 Cloudflare API 异常")
+        if (status != HttpStatusCode.OK || root["success"]?.jsonPrimitive?.booleanOrNull != true) {
+            return CfFetchResult(null, root.cfErrorOrDefault("HTTP ${status.value}：查询自定义域状态失败"))
+        }
+        val result = root["result"] as? JsonObject
+            ?: return CfFetchResult(null, "响应缺少 result")
+        val st = result["status"] as? JsonObject
+        return CfFetchResult(
+            CfR2CustomDomain(
+                domain = result["domain"]?.jsonPrimitive?.contentOrNull ?: domain,
+                enabled = result["enabled"]?.jsonPrimitive?.booleanOrNull ?: false,
+                ownership = st?.get("ownership")?.jsonPrimitive?.contentOrNull ?: "unknown",
+                ssl = st?.get("ssl")?.jsonPrimitive?.contentOrNull ?: "unknown",
+            )
+        )
     }
 
     override fun close() {

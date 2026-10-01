@@ -6,16 +6,15 @@
 
 ## 第 1 章 架构选型与环境准备清单
 
-AdbControl 支持以下两种生产部署架构：
+AdbControl 采用**单方案部署**：一台 Windows 云电脑承载后端 + 嵌入式 Web 前端。
 
-1. **主力方案：Cloud PC / 私有云主机一体化部署（推荐）**
-   - **特点**：后端服务 + 嵌入式 Web 前端 + 本地 MariaDB/MySQL 部署于同一台云电脑或 VPS（Windows Server / Linux）；
-   - **网络**：通过 **Tailscale** 建立零信任安全私网进行管理控制与敏感配置修改，通过 **Cloudflare Tunnel**（穿透 8080）对外发布供公网访问与设备通信；
-   - **发布**：本地执行 PowerShell 脚本一键全自动打包、上传、静默重载、健康自检。
-2. **多云方案：Serverless 云原生微服务部署**
-   - **后端**：打包 Docker 镜像后托管于 Fly.io（香港节点 `hkg`）；
-   - **前端**：独立编译后部署至 Cloudflare Workers / Pages；
-   - **数据库**：使用云数据库服务（如 SQLPub、AWS RDS）。
+- **特点**：后端服务 + Web 前端 + MySQL 部署于同一台云电脑；Web 前端编译产物已打进后端 dist 包，无需单独部署
+- **网络**：通过 **Tailscale** 建立零信任安全私网进行管理控制与敏感配置修改，通过 **Cloudflare 命名隧道**（穿透 8080）对外发布供公网访问与设备通信
+- **发布**：本地执行 PowerShell 脚本一键打包、上传、静默重载、健康自检；CI 构建产物由云电脑出站轮询或隧道回调触发自更新
+- **数据库**：本机 MariaDB 或外部 MySQL（如 SQLPub）
+
+> 早期文档中的 Fly.io / Serverless 多云方案已废弃，相关 `fly.toml`、`Dockerfile`
+> 与 workflow 已从仓库移除。
 
 ### 凭证与依赖准备清单
 
@@ -25,8 +24,8 @@ AdbControl 支持以下两种生产部署架构：
 | **Node.js** | 18.0 或更高版本 | 编译 Vue 3 Web 前端 |
 | **EMQX Cloud** | Host / Port / App ID / App Secret / REST Endpoint | MQTT 5.0 消息总线及动态凭据签发 |
 | **Cloudflare R2**| Endpoint / Bucket 名 / Access Key / Access Secret | 存放远程截图、设备运行日志 |
-| **Cloudflare API Token** | Cloudflare 控制台 → My Profile → API Tokens 创建，权限需覆盖 Zones / Tunnels / R2 / D1 / Access 读取 | Web 端「系统设置 → 隧道与域名」资源发现（只读）与 SSO Token 登录（可选） |
-| **Cloudflare Zero Trust** | 团队域名（`xxx.cloudflareaccess.com`）及 OIDC 应用 Client ID / Secret（Zero Trust → Access → Applications → SaaS 应用） | 「Cloudflare 官方账号登录」OIDC 单点登录（可选） |
+| **Cloudflare API Token** | Cloudflare 控制台 → My Profile → API Tokens 创建，权限需覆盖 Zones / Tunnels / R2 / D1 读取 | Web 端「系统设置 → 隧道与域名」资源发现（只读）与隧道穿透绑定（可选，也可用下方 OAuth 一键授权代替） |
+| **Cloudflare OAuth Client** | Cloudflare 控制台 → Manage Account → OAuth clients 创建私有应用，Redirect URL 填 `<站点>/api/admin/settings/cloudflare/oauth/callback` | 「系统设置 → 隧道与域名」一键授权 Cloudflare，免手工创建 / 粘贴 API Token（可选） |
 | **MySQL / MariaDB**| Host / Port / 数据库名 / 用户名 / 密码 | 持久化设备台账、任务规则、遥测与签收数据 |
 | **Tailscale** | 官方安装并登录同一 Tailnet 账号 | 零信任内网安全管理隧道 |
 | **SSH 密钥** | ed25519 或 RSA 密钥对 | 用于自动化部署流水线鉴权 |
@@ -50,8 +49,12 @@ C:\adbcontrol\
 ├── deploy.ps1                # 云端热替换与自检脚本 (由 deploy/deploy.ps1 提供)
 ├── backend-run.bat           # 后台守护循环启动脚本 (由 deploy/backend-run.bat 提供)
 ├── backup-db.ps1             # 数据库备份脚本 (由 deploy/backup-db.ps1 提供)
-└── tunnel_url.txt            # Cloudflare Tunnel 生成的公网直连域名缓存
+├── update-poll.ps1           # 出站轮询自更新脚本 (由 deploy/update-poll.ps1 提供)
+└── setup-update-task.ps1     # 注册轮询计划任务 (由 deploy/setup-update-task.ps1 提供)
 ```
+
+> 隧道对外地址没有独立缓存文件：它写在 `secrets.properties` 的 `server.url` 键里，
+> 由 Web 控制台「设置 → 隧道与域名」建隧道时写入。脚本读该键即可。
 
 ### 2.2 云主机端定时任务与守护设置
 在云主机上，后端建议配置为 Windows 计划任务或 NSSM 服务常驻运行：
@@ -80,83 +83,68 @@ C:\adbcontrol\
    - 备份旧版本并解压新版本至 `C:\adbcontrol\app\`；
    - 重新拉起计划任务；
    - 轮询等待 `/api/health` 存活检测（最长等待 60 秒），自检通过后输出数据库健康状态。
-4. **阶段 4：回传访问信息**：读取云端 `tunnel_url.txt`，在终端输出当前 Tailscale 访问地址与 Cloudflare Tunnel 公网直连网址。
+4. **阶段 4：回传访问信息**：从云端 `secrets.properties` 的 `server.url` 读出隧道对外地址，在终端输出当前 Tailscale 访问地址与 Cloudflare Tunnel 公网直连网址。
 
 ---
 
-## 第 3 章 多云方案：Fly.io + Cloudflare Pages 部署
+## 第 3 章 前端构建
 
-### 3.1 后端编译与 Dockerfile 测试
-```bash
-cd adbcontrol-backend
+Web 前端不单独部署 —— `adbcontrol-web/dist` 会由 Gradle 的 `syncWebDist` 任务
+同步进后端 `resources/static/`，随 `backend.zip` 一起分发，由后端自己托管
+（`route/WebAppRoutes.kt`）。因此：
 
-# 编译安装分发包
-./gradlew :backend:installDist
+- **本地开发**：`cd adbcontrol-web && npm run dev`（5173 端口，已在 CORS 白名单内）
+- **生产**：只需执行 `./gradlew :backend:distZip`，前端自动打包进去
+- 单独跑一次前端构建仅在改了前端但想快速验证时需要：`npm run build`
 
-# 本地容器构建验证 (可选)
-docker build -t adbcontrol-backend .
-docker run -p 8080:8080 adbcontrol-backend
-```
-
-### 3.2 部署到 Fly.io
-```bash
-# 首次部署
-fly launch --name adbcontrol-api --region hkg
-
-# 注入生产机密 (环境变量)
-fly secrets set \
-  ADB_SERVER_URL=https://api.yourdomain.com \
-  ADB_EMQX_HOST=o8cc1111.ala.cn-hangzhou.emqxsl.cn \
-  ADB_EMQX_PORT=8883 \
-  ADB_EMQX_APP_ID=o8cc1111 \
-  ADB_EMQX_APP_SECRET=从控制台复制 \
-  ADB_EMQX_REST_ENDPOINT=https://o8cc1111.ala.cn-hangzhou.emqxsl.cn:8443 \
-  ADB_EMQX_INGEST_USERNAME=ingestor \
-  ADB_EMQX_INGEST_PASSWORD=从控制台复制 \
-  ADB_R2_ENDPOINT=https://....r2.cloudflarestorage.com \
-  ADB_R2_BUCKET=slss-boby \
-  ADB_R2_ACCESS_KEY=从控制台复制 \
-  ADB_R2_ACCESS_SECRET=从控制台复制 \
-  ADB_MYSQL_HOST=mysql6.sqlpub.com \
-  ADB_MYSQL_PORT=3311 \
-  ADB_MYSQL_NAME=slss12 \
-  ADB_MYSQL_USER=slss12 \
-  ADB_MYSQL_PASSWORD=从控制台复制 \
-  SESSION_SECRET=$(openssl rand -hex 48)
-
-# 后续迭代部署
-fly deploy --local-only
-```
-
----
-
-### 3.3 前端部署至 Cloudflare Workers 静态资产
-```bash
-cd adbcontrol-web
-
-# 构建带后端 API 生产域名的静态包
-VITE_API_BASE=https://api.yourdomain.com npm run build
-
-# 部署至 Cloudflare
-npx wrangler deploy
-```
+> 早期「前端部署至 Cloudflare Pages」的多云方案已废弃。若要恢复独立托管，
+> 注意后端 CORS 白名单（`plugin/Cors.kt`）默认只放行 `localhost`，
+> 生产域名必须显式配 `CORS_ORIGINS`，且不会对 `*.pages.dev` 整体放行。
 
 ---
 
 ## 第 4 章 数据库日常维护与自动备份
 
-为保证设备遥测数据与签收审计记录的安全性，系统在云主机端内置了全自动备份脚本 [`backup-db.ps1`](file:///D:/手机控制/adbcontrol-backend/deploy/backup-db.ps1)。
+### 4.1 数据库选型
 
-### 4.1 手动触发备份
+数据库**不随代码分发**，需自行准备。表结构由后端启动时自动创建
+（`DatabaseService.runSchema()` 执行 `CREATE TABLE IF NOT EXISTS` + 增量补列），
+无需手动导入 `schema.sql`。
+
+| 方案 | 配置 | 适用 |
+| :--- | :--- | :--- |
+| **A. 本地 MariaDB**（推荐） | `db.host = 127.0.0.1` | 单机部署，与后端同机走回环，不出公网 |
+| B. 外部 MySQL | `db.host = <远端地址>` | 多实例或需要独立扩容；公网库须设 `db.ssl_verify = true` |
+
+本机地址（`127.0.0.1` / `localhost`）在代码里有专门分支：自动附加
+`useSSL=false&allowPublicKeyRetrieval=true`，因此本机部署**不必**设置
+`db.ssl_verify`。远程库默认走「加密但不认证」（`verifyServerCertificate=false`），
+可被中间人截获口令与 `pair_session` 表中的明文密钥，生产环境建议置 `true`。
+
+本地库只需监听 `127.0.0.1`，**不要**为 3306 放行任何入站防火墙规则。
+
+### 4.2 备份（仅方案 A 适用）
+
+内置备份脚本 [`backup-db.ps1`](file:///D:/手机控制/adbcontrol-backend/deploy/backup-db.ps1)：
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1
 ```
 
-### 4.2 自动备份与滚动清理机制
-- **备份策略**：利用 `mariadb-dump.exe` 导出完整包含结构、表数据、存储过程与触发器的 `.sql` 文件。
-- **自动归档格式**：`C:\adbcontrol\backup\adbcontrol_YYYYMMDD_HHmmss.sql`。
-- **滚动删除**：脚本自动检索历史备份文件，安全清理创建时间超过 **7 天**（`$RetentionDays = 7`）的过期 Dump，确保存储空间可控。
-- **配置计划任务**：建议在 Windows 计划任务中设置每日凌晨 03:00 定时执行一次。
+- **dump 路径查找**：依次尝试 `C:\adbcontrol\mariadb\bin\mariadb-dump.exe` 与
+  `mysqldump.exe`。把 MariaDB 免安装包解压到 `C:\adbcontrol\mariadb\` 即可免配置使用；
+  若用 `winget` 装到默认路径，需自行修改脚本中的 `$dumpExe`。
+- **账号密码**：脚本顶部 `$DbUser` / `$DbPass` 默认值是历史遗留，**首次使用前必须改成
+  你的实际值**，否则备份会因认证失败而中断。
+- **自动归档格式**：`C:\adbcontrol\backup\adbcontrol_YYYYMMDD_HHmmss.sql`
+- **滚动删除**：自动清理创建时间超过 **7 天**（`$RetentionDays`）的过期 Dump。
+- **配置计划任务**：建议设置每日凌晨 03:00 执行：
+  ```powershell
+  schtasks /create /tn AdbControlDbBackup /tr "powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1" /sc daily /st 03:00 /ru SYSTEM /f
+  ```
+
+> 方案 B 请用云厂商的自动快照能力，或自建 `mysqldump` 定时任务 ——
+> `backup-db.ps1` 假定数据库就在本机。
 
 ---
 
@@ -164,14 +152,17 @@ powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1
 
 后端接口 `/api/admin/settings/*` 控制着 EMQX 密钥、MySQL 密码与 R2 凭据等系统命脉，安全防护至关重要：
 
-1. **网络守卫拦截规则**：
-   - 守卫模块 [`NetworkSecurity`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/security/NetworkSecurity.kt) 对所有进入该路由的请求提取真实来源 IP；
-   - 仅当客户端 IP 属于 **Tailscale 私网段（`100.64.0.0/10`）** 或 **本地回环（`127.0.0.1` / `::1`）** 时方允许放行；
-   - 经由 Cloudflare Tunnel 或公网直接探测的访问将直接返回 `403 Forbidden`（错误码 `FORBIDDEN_TAILSCALE_ONLY`）。
-2. **凭据热保存与平滑重启**：
-   - 管理员在 Web 设置页面点击“保存配置并重启后端”；
-   - 后端服务直接将变更写回 `C:\adbcontrol\secrets.properties`；
-   - 启动异步协程在 1 秒延迟后退出进程，由系统看门狗（`backend-run.bat`）在 5 秒内自动重启拉起，实现无损平滑切换。
+1. **双重门禁**（`route/SettingsRoutes.kt` 的 `ensureTailscaleOrLocal()`）：
+   - 第一层：`authenticate("auth-session")` —— 必须携带有效的 `ADB_SESSION` 会话 Cookie。该 Cookie 由 HMAC-SHA256 签名（密钥持久化在 `session.secret`），且会话有效性以数据库为准：改密后所有旧会话立即失效。
+   - 第二层：来源校验。二者满足其一即放行 —
+     - **Tailscale / 内网直连**：`NetworkSecurity.isLocalOrTailscale()` 判定 TCP 对端属于 `100.64.0.0/10`、`fd7a:115c:a1e0::/48`、私有网段或回环；
+     - **管理员会话**：已登录的管理员，**包括经 Cloudflare 隧道从公网访问**。
+   - 两者都不满足时返回 `403 Forbidden`（错误码 `FORBIDDEN_AUTH_REQUIRED`）。
+2. **伪造防护**：信任判定**只读 TCP 对端地址**，绝不采信 `X-Forwarded-For` / `X-Real-IP` —— 直连源站的攻击者伪造 `XFF: 100.64.x.x` 即可冒充 Tailscale 节点。同理，只要出现 `CF-Connecting-IP` / `CF-Ray` / `CF-Visitor` 任一请求头，就一律判定为公网流量（`isLocalOrTailscale` 直接返回 false），此时只有管理员会话能通过。
+3. **凭据热保存与平滑重启**：
+   - 管理员在 Web 设置页面保存配置；
+   - 后端直接将变更写回 `C:\adbcontrol\secrets.properties`（临时文件 + `ATOMIC_MOVE` 原子替换，避免写盘中途崩溃导致密钥全丢）；
+   - 多数配置项需点「重启后端」生效：先返回响应，1 秒后 `exitProcess(0)`，由看门狗（`backend-run.bat`）在 5 秒内自动拉起。会话密钥、CI 令牌等少数项实时读取，改完即生效。
 
 ---
 
@@ -193,40 +184,57 @@ powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1
 
 ---
 
-## 第 7 章 Cloudflare 集成：SSO 登录与云资源绑定
+## 第 7 章 Cloudflare 集成：授权与云资源绑定
 
-> 设计细节见 [DESIGN.md 10.7](../DESIGN.md)。本章只讲部署侧操作。两种集成均为可选，不配置不影响账号密码登录。
+> 设计细节见 [DESIGN.md 10.7/10.8](../DESIGN.md)。本章只讲部署侧操作。Cloudflare 集成为可选，不配置不影响账号密码登录。
+>
+> **登录方式说明**：系统仅支持账号密码登录。原 Access 头免密登录、API Token 登录与 Zero Trust OIDC 单点登录已于 2026-09-30 移除；Cloudflare 凭据只用于云资源管理，不参与登录。
 
-### 7.1 SSO 登录三种方式与选择
+### 7.1 Cloudflare OAuth 一键授权（推荐）
 
-| 方式 | 前置条件 | 操作入口 |
-| :--- | :--- | :--- |
-| **Access 头免密登录** | 站点整体置于 Cloudflare Tunnel + Zero Trust Access 策略之后 | 登录页自动探测到 Access 身份后一键登录 |
-| **API Token 登录** | 任一有效 Cloudflare API Token | 登录页输入 Token 即登录（Token 自动保存，供设置页资源发现复用） |
-| **OIDC 官方账号登录** | Zero Trust 控制台创建 SaaS OIDC 应用，拿到 Client ID / Secret | 登录页点击「Cloudflare 官方账号登录」跳转授权 |
+相比手工创建并粘贴 API Token，推荐在 Web 界面完成一次 OAuth 授权：
 
-OIDC 方式需在「系统设置 → 登录与安全」保存团队域名（`cf.team_domain`）与 Client ID / Secret（`cf.oidc_client_id` / `cf.oidc_client_secret`）；回调地址默认 `<站点地址>/api/auth/cf-oidc/callback`，如站点对外地址与后端实际监听不一致，需一并填写自定义回调（`cf.oidc_redirect_uri`）并同步到 Zero Trust 应用配置。
+1. 在 Cloudflare 控制台 → **Manage Account → OAuth clients** 创建一个私有应用，Redirect URL 填 `<站点地址>/api/admin/settings/cloudflare/oauth/callback`；
+2. 登录后进入「系统设置 → 隧道与域名」，展开 Cloudflare 一键授权卡片，粘贴 Client ID / Client Secret 并保存；
+3. 点击「连接 Cloudflare」跳转官方授权页，同意后自动跳回设置页，票据由后端落盘并自动续期；
+4. 此后资源同步、隧道穿透绑定、R2 一键配置均自动使用该票据，无需再维护长期 API Token。
 
-> **注意**：SSO 登录在管理员未初始化时会以登录身份自动创建初始管理员。若不希望任何人经 SSO 抢注管理员，请先完成账号密码初始化（第 6 章），或确保 Access 策略 / OIDC 应用已限定到可信邮箱。
+> OAuth 票据**没有** `API Tokens:Write` scope，无法签发长期 Token（安全上限）；因此 R2 一键配置生成 S3 凭据仍需一枚手工 bootstrap token（见 7.2）。
 
-### 7.2 云资源绑定（推荐走 Web 界面，逐项手动）
+### 7.2 R2 存储一键全自动配置
+
+「存储 R2」页提供一键配置：自动建桶（幂等复用）→ 开启 r2.dev 公共读域名 → 生成**仅限该桶**的 S3 凭据 → 实测校验通过后才写入配置。
+
+- 生成凭据需一枚带「**Account API Tokens:Edit**」的 bootstrap token（仅此一步用到；保存后可复用，不再需要时建议到 Cloudflare 控制台吊销）；
+- 未保存 bootstrap token 时，每次一键配置需临时在页面粘贴一次。
+
+### 7.3 云资源绑定（推荐走 Web 界面，逐项手动）
 
 > 设置页重整后**不再提供一键自动绑定**：资源发现只读，所有写入都要人工逐项确认，避免自动绑错资源。
 
-1. 登录后进入「系统设置 → 隧道与域名 → 高级」，粘贴 Cloudflare API Token 并保存，系统自动（只读）同步账户下的域名、隧道、R2 桶与 D1 数据库；
-2. **对外域名**：在「隧道与域名 → 对外服务地址」用「更换地址 / 添加主机名 / 换用新隧道」；「添加主机名」走隧道穿透（建/选隧道 → 合并 ingress → 绑 DNS），可勾选同时开启 MQTT over WSS 双栈通道（追加 `/mqtt → EMQX:8084`）；
-3. **存储桶**：在「存储 R2」页逐桶点「绑定此存储桶」，再补齐 Access Key / Secret；
+1. 完成 7.1 的 OAuth 授权（或在「隧道与域名 → 高级」粘贴 API Token 保存）后，系统自动（只读）同步账户下的域名、隧道、R2 桶与 D1 数据库；
+2. **对外域名**：在「隧道与域名 → 对外服务地址」用「更换地址 / 添加主机名 / 换用新隧道」；「添加主机名」走隧道穿透（建/选隧道 → 合并 ingress → 绑 DNS），可勾选同时开启 MQTT over WSS 双栈通道（追加 `/mqtt → EMQX:8084`）；绑定后可在弹窗中一键自动安装 cloudflared 连接器（需管理员权限，失败时会给出手动命令）；
+3. **存储桶**：优先用「存储 R2」页的一键全自动配置（见 7.2）；或逐桶点「绑定此存储桶」再补齐 Access Key / Secret；
 4. **D1**：在「数据库」页逐库点「绑定此库」（或手动填写并绑定）；
 5. 绑定结果可在「总览」页各模块卡片查看（隧道 / R2 / D1 分别显示配置状态）。
 
 > 弱网提示：若经 Cloudflare 隧道 / 公网访问，首屏需下载前端 JS/CSS；后端已开启 gzip（首屏关键资源 ~1.66MB → ~466KB）。若仍超时，请优先用 Tailscale 内网地址访问。
 
-### 7.3 相关配置键速查
+### 7.4 相关配置键速查
 
 | secrets.properties 键 | 写入途径 | 用途 |
 | :--- | :--- | :--- |
-| `cf.api_token` | Token 登录 / 设置页「隧道与域名 → 高级」保存 | Cloudflare API 调用凭据（供只读发现与隧道穿透使用） |
-| `cf.team_domain` | OIDC 配置保存 / 同步时自动补填 | OIDC 登录团队域名 |
-| `cf.oidc_client_id` / `cf.oidc_client_secret` | OIDC 配置保存 | OIDC 应用凭据 |
-| `cf.oidc_redirect_uri` | OIDC 配置保存 | 自定义回调地址（缺省 `<站点>/api/auth/cf-oidc/callback`） |
-| `d1.database_id` / `d1.database_name` / `d1.account_id` | D1 绑定 / 自动绑定；亦可用环境变量 `ADB_D1_DATABASE_ID` / `ADB_D1_DATABASE_NAME` / `ADB_D1_ACCOUNT_ID` | D1 数据库绑定标识 |
+| `cf.api_token` | 设置页「隧道与域名 → 高级」保存 / 资源同步时自动持久化 | Cloudflare API 调用凭据（供只读发现与隧道穿透使用） |
+| `cf.oauth_client_id` / `cf.oauth_client_secret` / `cf.oauth_scopes` | 设置页 OAuth 卡片保存 | OAuth 一键授权应用凭据 |
+| `cf.oauth_access_token` / `cf.oauth_refresh_token` / `cf.oauth_expires_at` | 授权回调后自动写入并续期 | OAuth 票据（无需手工维护） |
+| `cf.bootstrap_token` | R2 一键配置时保存 | **高危**：带「Account API Tokens:Edit」，仅用于生成 R2 桶级 S3 凭据 |
+| `r2.public_base_url` | R2 一键配置自动写入 | r2.dev 公共访问基址 |
+| `d1.database_id` / `d1.database_name` / `d1.account_id` | D1 绑定；亦可用环境变量 `ADB_D1_DATABASE_ID` / `ADB_D1_DATABASE_NAME` / `ADB_D1_ACCOUNT_ID` | D1 数据库绑定标识 |
+| `server.url` | 「隧道与域名」绑定 / 更换对外地址 | 对外服务地址基址；CI 回调地址也由它推导 |
+| `ci.upgrade_token` | 「CI 部署」tab 点「生成 / 轮换令牌」 | **仅**门控 `POST /api/admin/upgrade`（CI 触发部署）。明文只在生成时返回一次 |
+| `pm.token` | 「登录与安全」页手动填写 | **仅**门控 `POST /api/updates/publish`（向全部已配对设备推 OTA）。与上一项是两把独立的钥匙 |
+
+> 令牌权限分离的理由：CI 只需要让本机拉取 GitHub 最新构建，而 `pm.token` 能向所有
+> 已配对设备下发任意 APK。两者影响面差一个量级，不应共用。
+
+> 历史遗留提示：若 `secrets.properties` 中仍存在 `cf.team_domain` / `cf.oidc_client_id` / `cf.oidc_client_secret` / `cf.oidc_redirect_uri` / `cf.allowed_emails` / `cf.token_login_enabled` 等键，系统已不再读取，可手动删除。

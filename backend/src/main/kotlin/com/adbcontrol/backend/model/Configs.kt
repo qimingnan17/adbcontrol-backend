@@ -31,6 +31,11 @@ data class R2Config(
     val accessKey: String,
     val accessSecret: String,
     val publicRead: Boolean = true,
+    /**
+     * 对象公开访问的基地址（如 r2.dev 域名 https://pub-xxxx.r2.dev）。
+     * 为空时被控端回退用 S3 endpoint 拼 URL。
+     */
+    val publicBaseUrl: String = "",
 )
 
 @Serializable

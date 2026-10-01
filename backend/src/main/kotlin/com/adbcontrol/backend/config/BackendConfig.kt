@@ -41,6 +41,8 @@ data class BackendConfig(
     val r2Bucket: String,
     val r2AccessKey: String,
     val r2AccessSecret: String,
+    /** 对象公开访问基地址(如 r2.dev 域名 https://pub-xxxx.r2.dev);为空时下发空值,设备回退旧行为。 */
+    val r2PublicBaseUrl: String = "",
     val dbHost: String,
     val dbPort: Int,
     val dbName: String,
@@ -54,6 +56,9 @@ data class BackendConfig(
     val emqxIngestPassword: String = "",
     /** OTA 版本发布令牌(CI 经 X-Admin-Token 头调用 /api/updates/publish;未配置则发布通道关闭)。 */
     val pmToken: String = "",
+    /** CI 部署触发令牌(仅门控 /api/admin/upgrade,拉起自更新计划任务)。
+     *  与 pmToken 分离:pmToken 能给全部已配对设备推 OTA,泄露面更大,不应出现在 CI 配置里。 */
+    val ciUpgradeToken: String = "",
     /** Cloudflare D1 数据库绑定配置 */
     val d1DatabaseId: String = "",
     val d1DatabaseName: String = "",
@@ -83,6 +88,7 @@ data class BackendConfig(
             accessKey = r2AccessKey,
             accessSecret = r2AccessSecret,
             publicRead = true,
+            publicBaseUrl = r2PublicBaseUrl,
         )
     }
 
@@ -190,6 +196,7 @@ data class BackendConfig(
                 r2Bucket = get("ADB_R2_BUCKET", "r2.bucket", DEFAULT_R2_BUCKET),
                 r2AccessKey = get("ADB_R2_ACCESS_KEY", "r2.access_key", ""),
                 r2AccessSecret = get("ADB_R2_ACCESS_SECRET", "r2.access_secret", ""),
+                r2PublicBaseUrl = get("ADB_R2_PUBLIC_BASE_URL", "r2.public_base_url", ""),
                 dbHost = getDb("HOST", "db.host", DEFAULT_DB_HOST),
                 dbPort = getIntDb("PORT", "db.port", DEFAULT_DB_PORT),
                 dbName = getDb("NAME", "db.name", DEFAULT_DB_NAME),
@@ -198,6 +205,7 @@ data class BackendConfig(
                 emqxIngestUsername = get("ADB_EMQX_INGEST_USERNAME", "emqx.ingest_username", ""),
                 emqxIngestPassword = get("ADB_EMQX_INGEST_PASSWORD", "emqx.ingest_password", ""),
                 pmToken = get("ADB_PM_TOKEN", "pm.token", ""),
+                ciUpgradeToken = get("ADB_CI_UPGRADE_TOKEN", "ci.upgrade_token", ""),
                 d1DatabaseId = get("ADB_D1_DATABASE_ID", "d1.database_id", ""),
                 d1DatabaseName = get("ADB_D1_DATABASE_NAME", "d1.database_name", ""),
                 d1AccountId = get("ADB_D1_ACCOUNT_ID", "d1.account_id", ""),

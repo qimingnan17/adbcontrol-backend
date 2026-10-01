@@ -4,6 +4,7 @@ import com.adbcontrol.backend.config.BackendConfig
 import com.adbcontrol.backend.data.MysqlSchema
 import com.adbcontrol.backend.model.AdminUser
 import com.adbcontrol.backend.model.DbConfig
+import com.adbcontrol.backend.model.DeviceFileRow
 import com.adbcontrol.backend.security.PasswordHasher
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
@@ -1258,6 +1259,154 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             }
         }.getOrElse {
             logger.warn("updateAdminPassword failed for id={}: {}", adminId, it.message)
+            false
+        }
+    }
+
+    // ---- 文件中转台账(device_file) ----
+    // 字节流不落库,只存元数据 + 磁盘相对路径。DB 不可达时调用方回退到内存索引
+    // (见 DeviceFileStore),因此这里的读写一律 best-effort,不抛异常。
+
+    /** 新增一条文件中转记录。返回是否实际写入(DB 不可达时为 false)。 */
+    fun insertDeviceFile(row: DeviceFileRow): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    """
+                    INSERT IGNORE INTO device_file
+                      (id, device_id, direction, file_name, content_type, size_bytes, sha256, storage_path, status, uploader, created_at, delivered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """.trimIndent()
+                ).use { ps ->
+                    ps.setString(1, row.id)
+                    ps.setString(2, row.deviceId)
+                    ps.setString(3, row.direction)
+                    ps.setString(4, row.fileName)
+                    ps.setString(5, row.contentType)
+                    ps.setLong(6, row.sizeBytes)
+                    ps.setString(7, row.sha256)
+                    ps.setString(8, row.storagePath)
+                    ps.setString(9, row.status)
+                    ps.setString(10, row.uploader)
+                    ps.setLong(11, row.createdAt)
+                    ps.setLong(12, row.deliveredAt)
+                    ps.executeUpdate() > 0
+                }
+            }
+        }.getOrElse {
+            logger.warn("insertDeviceFile failed for id={}: {}", row.id, it.message)
+            false
+        }
+    }
+
+    /** 按设备(可选)拉取文件列表,倒序。 */
+    fun listDeviceFiles(deviceId: String?, limit: Int): List<DeviceFileRow> {
+        val ds = dataSource ?: ensureDataSource() ?: return emptyList()
+        val cappedLimit = limit.coerceIn(1, 500)
+        val sql = if (deviceId.isNullOrBlank()) {
+            "SELECT * FROM device_file ORDER BY created_at DESC LIMIT ?"
+        } else {
+            "SELECT * FROM device_file WHERE device_id = ? ORDER BY created_at DESC LIMIT ?"
+        }
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(sql).use { ps ->
+                    if (deviceId.isNullOrBlank()) {
+                        ps.setInt(1, cappedLimit)
+                    } else {
+                        ps.setString(1, deviceId)
+                        ps.setInt(2, cappedLimit)
+                    }
+                    ps.executeQuery().use { rs ->
+                        val list = mutableListOf<DeviceFileRow>()
+                        while (rs.next()) {
+                            list.add(
+                                DeviceFileRow(
+                                    id = rs.getString("id"),
+                                    deviceId = rs.getString("device_id"),
+                                    direction = rs.getString("direction"),
+                                    fileName = rs.getString("file_name"),
+                                    contentType = rs.getString("content_type") ?: "application/octet-stream",
+                                    sizeBytes = rs.getLong("size_bytes"),
+                                    sha256 = rs.getString("sha256") ?: "",
+                                    storagePath = rs.getString("storage_path") ?: "",
+                                    status = rs.getString("status") ?: "ready",
+                                    uploader = rs.getString("uploader") ?: "",
+                                    createdAt = rs.getLong("created_at"),
+                                    deliveredAt = rs.getLong("delivered_at"),
+                                )
+                            )
+                        }
+                        list
+                    }
+                }
+            }
+        }.getOrElse {
+            logger.warn("listDeviceFiles failed: {}", it.message)
+            emptyList()
+        }
+    }
+
+    /** 按 id 查单条。 */
+    fun findDeviceFile(id: String): DeviceFileRow? {
+        val ds = dataSource ?: ensureDataSource() ?: return null
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("SELECT * FROM device_file WHERE id = ?").use { ps ->
+                    ps.setString(1, id)
+                    ps.executeQuery().use { rs ->
+                        if (!rs.next()) null else DeviceFileRow(
+                            id = rs.getString("id"),
+                            deviceId = rs.getString("device_id"),
+                            direction = rs.getString("direction"),
+                            fileName = rs.getString("file_name"),
+                            contentType = rs.getString("content_type") ?: "application/octet-stream",
+                            sizeBytes = rs.getLong("size_bytes"),
+                            sha256 = rs.getString("sha256") ?: "",
+                            storagePath = rs.getString("storage_path") ?: "",
+                            status = rs.getString("status") ?: "ready",
+                            uploader = rs.getString("uploader") ?: "",
+                            createdAt = rs.getLong("created_at"),
+                            deliveredAt = rs.getLong("delivered_at"),
+                        )
+                    }
+                }
+            }
+        }.getOrElse {
+            logger.warn("findDeviceFile failed for id={}: {}", id, it.message)
+            null
+        }
+    }
+
+    /** 标记已投递给设备(下行文件手机拉取完成时调用)。 */
+    fun markDeviceFileDelivered(id: String, ts: Long) {
+        val ds = dataSource ?: ensureDataSource() ?: return
+        runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement(
+                    "UPDATE device_file SET status = 'delivered', delivered_at = ? WHERE id = ?"
+                ).use { ps ->
+                    ps.setLong(1, ts)
+                    ps.setString(2, id)
+                    ps.executeUpdate()
+                }
+            }
+        }.onFailure { logger.warn("markDeviceFileDelivered failed for id={}: {}", id, it.message) }
+    }
+
+    /** 删除台账行。返回是否删掉了至少一行。 */
+    fun deleteDeviceFile(id: String): Boolean {
+        val ds = dataSource ?: ensureDataSource() ?: return false
+        return runCatching {
+            ds.connection.use { conn ->
+                conn.prepareStatement("DELETE FROM device_file WHERE id = ?").use { ps ->
+                    ps.setString(1, id)
+                    ps.executeUpdate() > 0
+                }
+            }
+        }.getOrElse {
+            logger.warn("deleteDeviceFile failed for id={}: {}", id, it.message)
             false
         }
     }

@@ -92,7 +92,7 @@ curl -s http://localhost:8080/health
    - 填写管理员用户名（3-32 位）和密码（至少 8 位），点击“初始化并进入控制台”；
    - 后端在 `admin_user` 表中创建唯一管理员记录并自动建立登录状态。
 3. 登录成功后进入 **仪表盘（Dashboard）**。
-4. **SSO 免密登录（可选）**：除账号密码外，登录页还支持三种 Cloudflare 登录方式——Zero Trust Access 头探测一键登录、API Token 校验登录、OIDC 官方账号跳转登录；配置方法见 [DEPLOY.md 第 7 章](DEPLOY.md#第-7-章-cloudflare-集成sso-登录与云资源绑定)。若管理员尚未初始化，SSO 登录会以登录身份自动创建初始管理员。
+4. **登录方式**：系统仅支持账号密码登录。Cloudflare 的 Access 免密登录、API Token 登录与 OIDC 单点登录已移除；Cloudflare OAuth 一键授权仅用于云资源管理凭据（在「系统设置 → 隧道与域名」中操作，仅管理员可用），与登录无关。详见 [DEPLOY.md 第 7 章](DEPLOY.md#第-7-章-cloudflare-集成授权与云资源绑定)。
 
 ---
 
@@ -191,4 +191,5 @@ adb shell pm clear com.adbcontrol.controlled
 | **受控端 MQTT 连接失败** | 凭证过期或 8883 端口受阻 | 检查手机网络是否放行 8883 端口；或在 Web 端重新生成令牌重新配对 |
 | **Shizuku 执行命令超时** | Shizuku 授权被系统收回或服务未运行 | 打开 Shizuku App 确认服务运行正常，并在授权列表中重新勾选受控端 |
 | **截图上传失败** | Cloudflare R2 密钥配置错误 | 在 Web 设置页点击「测试 R2 读写」，确认 AccessKey/Secret 与 Bucket 正确有效 |
+| **Tailscale 访问超时/极慢**（页面打不开但 curl 小请求能通） | 打洞失败，流量绕道海外 DERP 中继（~400ms、<50KB/s） | 本机跑 `tailscale ping <对端IP>`：显示 `via DERP` 即中继。修复：在云电脑安全组放行 UDP 41641 出入站后重试；或改走 Cloudflare Tunnel 公网域名访问，绕开内网链路 |
 | **通知签收无回执** | MQTT 消息丢包或唯一约束拦截 | 检查手机 logcat 是否输出 `REMINDER_RESULT published`；检查数据库 `task_ack` 表是否有重复 `ack_id` |

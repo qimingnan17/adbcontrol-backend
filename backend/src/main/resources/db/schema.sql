@@ -194,3 +194,24 @@ CREATE TABLE IF NOT EXISTS app_version_manifest (
   created_at              BIGINT       NOT NULL,
   UNIQUE KEY uq_code_channel (version_code, channel)
 );
+
+-- 文件中转台账(手机 ↔ 后端 ↔ Web 双向)
+-- direction: up = 手机上传给后端,down = Web 下发给手机
+-- status:    ready = 已就绪可下载,delivered = 已投递给设备
+-- 注:文件字节流落在后端磁盘(ADB_FILES_DIR),本表只存元数据与相对路径。
+CREATE TABLE IF NOT EXISTS device_file (
+  id           VARCHAR(40)  PRIMARY KEY,
+  device_id    VARCHAR(64)  NOT NULL,
+  direction    VARCHAR(8)   NOT NULL,
+  file_name    VARCHAR(255) NOT NULL,
+  content_type VARCHAR(128) NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes   BIGINT       NOT NULL DEFAULT 0,
+  sha256       CHAR(64)     NOT NULL DEFAULT '',
+  storage_path VARCHAR(512) NOT NULL,
+  status       VARCHAR(16)  NOT NULL DEFAULT 'ready',
+  uploader     VARCHAR(64)  NOT NULL DEFAULT '',
+  created_at   BIGINT       NOT NULL,
+  delivered_at BIGINT       NOT NULL DEFAULT 0,
+  INDEX idx_dev_created (device_id, created_at),
+  INDEX idx_created (created_at)
+);

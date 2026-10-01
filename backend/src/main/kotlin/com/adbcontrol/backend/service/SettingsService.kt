@@ -76,11 +76,8 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         val emqxIngestPwd = props.getProperty("emqx.ingest_password", "")
         val dbPwd = props.getProperty("db.password", "")
         val pmTok = props.getProperty("pm.token", "")
+        val ciTok = props.getProperty("ci.upgrade_token", "")
         val cfTok = props.getProperty("cf.api_token", "")
-        val cfTeamDomain = props.getProperty("cf.team_domain", "")
-        val cfOidcClientId = props.getProperty("cf.oidc_client_id", "")
-        val cfOidcClientSecret = props.getProperty("cf.oidc_client_secret", "")
-        val cfOidcRedirectUri = props.getProperty("cf.oidc_redirect_uri", "")
         val d1Id = props.getProperty("d1.database_id", config.d1DatabaseId)
         val d1Name = props.getProperty("d1.database_name", config.d1DatabaseName)
         val d1Acc = props.getProperty("d1.account_id", config.d1AccountId)
@@ -110,6 +107,8 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
                 url = props.getProperty("server.url", config.serverUrl),
                 pmToken = maskSecret(pmTok.ifEmpty { config.pmToken }),
                 hasPmToken = (pmTok.isNotBlank() || config.pmToken.isNotBlank()),
+                ciUpgradeToken = maskSecret(ciTok.ifEmpty { config.ciUpgradeToken }),
+                hasCiUpgradeToken = (ciTok.isNotBlank() || config.ciUpgradeToken.isNotBlank()),
             ),
             db = DbSecrets(
                 host = props.getProperty("db.host", config.dbHost),
@@ -122,11 +121,6 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             cf = CfSecrets(
                 apiToken = maskSecret(cfTok),
                 hasApiToken = cfTok.isNotBlank(),
-                teamDomain = cfTeamDomain,
-                oidcClientId = cfOidcClientId,
-                oidcClientSecret = maskSecret(cfOidcClientSecret),
-                hasOidcClientSecret = cfOidcClientSecret.isNotBlank(),
-                oidcRedirectUri = cfOidcRedirectUri
             ),
             d1 = D1Secrets(
                 databaseId = d1Id,
@@ -183,13 +177,10 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             appendLine("# ---- Server & PM ----")
             appendLine("server.url = ${map["server.url"] ?: config.serverUrl}")
             appendLine("pm.token = ${map["pm.token"] ?: ""}")
+            appendLine("ci.upgrade_token = ${map["ci.upgrade_token"] ?: ""}")
             appendLine()
-            appendLine("# ---- Cloudflare API & Zero Trust OIDC ----")
+            appendLine("# ---- Cloudflare API ----")
             appendLine("cf.api_token = ${map["cf.api_token"] ?: ""}")
-            appendLine("cf.team_domain = ${map["cf.team_domain"] ?: ""}")
-            appendLine("cf.oidc_client_id = ${map["cf.oidc_client_id"] ?: ""}")
-            appendLine("cf.oidc_client_secret = ${map["cf.oidc_client_secret"] ?: ""}")
-            appendLine("cf.oidc_redirect_uri = ${map["cf.oidc_redirect_uri"] ?: ""}")
             appendLine()
             appendLine("# ---- Cloudflare R2 ----")
             appendLine("r2.endpoint = ${map["r2.endpoint"] ?: config.r2Endpoint}")
@@ -221,8 +212,8 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             // 保留非预置 key:上面只重写固定键集合,其余原样追加,
             // 否则每次保存都会把运维手工加进文件的自定义项静默抹掉。
             val knownKeys = setOf(
-                "server.url", "pm.token",
-                "cf.api_token", "cf.team_domain", "cf.oidc_client_id", "cf.oidc_client_secret", "cf.oidc_redirect_uri",
+                "server.url", "pm.token", "ci.upgrade_token",
+                "cf.api_token",
                 "r2.endpoint", "r2.bucket", "r2.access_key", "r2.access_secret",
                 "emqx.host", "emqx.port", "emqx.appid", "emqx.rest_endpoint", "emqx.app_secret",
                 "emqx.ingest_username", "emqx.ingest_password",
@@ -306,6 +297,27 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
             isD1Bound = isD1Bound,
             hasApiToken = hasApiToken,
             isAllBound = isTunnelBound && isR2Bound && isD1Bound
+        )
+    }
+
+    /**
+     * 汇总 CI 自动部署接入信息(回调 URL + 令牌状态)。
+     *
+     * [token] 仅在轮换时由调用方传入并明文回显一次;日常查询传 null,前端拿到的只有状态。
+     * 隧道地址取 server.url —— 主机无公网,CI 只能经 Cloudflare 命名隧道回调,
+     * 而命名隧道主机名在 provision-tunnel 时已写入该键,主机名稳定(不同于 Quick Tunnel)。
+     */
+    @Synchronized
+    fun buildCiAccess(token: String? = null): CiAccessResponse {
+        val serverUrl = getRawProperty("server.url", config.serverUrl).trim().trimEnd('/')
+        val isTunnelBound = serverUrl.isNotBlank() && !serverUrl.contains("example.com")
+        val existing = getRawProperty("ci.upgrade_token").ifBlank { config.ciUpgradeToken }
+        return CiAccessResponse(
+            serverUrl = serverUrl,
+            upgradeUrl = if (isTunnelBound) "$serverUrl/api/admin/upgrade" else "",
+            isTunnelBound = isTunnelBound,
+            hasToken = existing.isNotBlank(),
+            token = token,
         )
     }
 

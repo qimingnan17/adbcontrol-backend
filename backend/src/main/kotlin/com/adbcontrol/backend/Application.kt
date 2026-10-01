@@ -10,11 +10,14 @@ import com.adbcontrol.backend.route.authRoutes
 import com.adbcontrol.backend.route.settingsRoutes
 import com.adbcontrol.backend.route.webAppRoutes
 import com.adbcontrol.backend.routes.emqxRoutes
+import com.adbcontrol.backend.routes.fileTransferRoutes
 import com.adbcontrol.backend.routes.healthRoutes
 import com.adbcontrol.backend.routes.pairingRoutes
 import com.adbcontrol.backend.routes.updateApkProxyRoutes
 import com.adbcontrol.backend.routes.updateRoutes
 import com.adbcontrol.backend.service.AclService
+import com.adbcontrol.backend.service.CloudflareOAuthService
+import com.adbcontrol.backend.service.ConnectorInstaller
 import com.adbcontrol.backend.service.DatabaseService
 import com.adbcontrol.backend.service.DeviceCommandBridge
 import com.adbcontrol.backend.service.EmqxProxyService
@@ -116,9 +119,15 @@ fun Application.module() {
     val aclService = AclService(config, emqxProxy)
     // PairingService 依赖 emqxProxy:配对时经部署 API 动态注册设备 MQTT 账号
     val pairingService = PairingService(config, aclService, databaseService, emqxProxy)
-    val updateService = UpdateService(config, databaseService)
     val settingsService = SettingsService(config)
+    // UpdateService 需要实时读 secrets.properties 校验 CI 部署令牌(Web 面板轮换后即时生效)
+    val updateService = UpdateService(config, databaseService, settingsService)
     val cloudflareService = com.adbcontrol.backend.service.CloudflareService()
+    // Cloudflare OAuth 一键授权:用户点一次同意即可免去手工创建/粘贴 API Token，
+    // 票据短期有效，由本服务自动 refresh 续期。
+    val cfOAuthService = CloudflareOAuthService(settingsService)
+    // cloudflared 连接器安装器:下载二进制并注册为系统服务（需管理员权限，失败会明确回报）
+    val connectorInstaller = ConnectorInstaller()
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
     val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
     val realtimeEvents = RealtimeEventService()
@@ -144,6 +153,8 @@ fun Application.module() {
     // 关闭时释放 HTTP 客户端与数据库连接池(Bug#24)
     monitor.subscribe(ApplicationStopped) {
         cloudflareService.close()
+        cfOAuthService.close()
+        connectorInstaller.close()
         settingsService.close()
         taskScheduler.close()
         telemetryIngest.close()
@@ -164,11 +175,14 @@ fun Application.module() {
             // 显式声明类型为 Map<String, String>
             call.respond(mapOf("status" to "ok", "time" to System.currentTimeMillis().toString()))
         }
-        authRoutes(databaseService, cloudflareService, settingsService)
+        authRoutes(databaseService)
         // 受 auth 保护的 admin 路由放在 authenticate 块里(由 AdminRoutes.kt 内部 authenticate("auth-session") 控制)
         adminRoutes(databaseService, pairingService, commandBridge)
-        settingsRoutes(settingsService, cloudflareService)
+        settingsRoutes(settingsService, cloudflareService, cfOAuthService, connectorInstaller)
         pairingRoutes(pairingService)
+        // 文件中转(手机 ↔ 后端 ↔ Web):设备侧走 HMAC 签名，
+        // 因此必须挂在 authenticate 块之外，否则设备请求会被会话中间件拦掉。
+        fileTransferRoutes(settingsService, databaseService, pairingService, commandBridge)
         updateRoutes(updateService, commandBridge)
         // SSE 实时事件流:设备状态/命令结果/签收/离线推给 Web 控制台(内部自带会话保护)
         realtimeRoutes(realtimeEvents)

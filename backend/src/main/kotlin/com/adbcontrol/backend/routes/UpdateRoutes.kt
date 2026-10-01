@@ -56,8 +56,13 @@ fun Route.updateRoutes(service: UpdateService, commandBridge: DeviceCommandBridg
     }
 
     post("/api/admin/upgrade") {
-        if (!service.verifyPublishToken(call.request.headers["X-Admin-Token"])) {
-            call.respond(HttpStatusCode.Unauthorized, Ack("error", "invalid or missing X-Admin-Token"))
+        // 用独立的 ci.upgrade_token,而非门控 OTA 发布的 pmToken:
+        // 拿到部署触发权不该等于拿到"向所有已配对设备推送任意 APK"的能力。
+        if (!service.verifyUpgradeToken(call.request.headers["X-Admin-Token"])) {
+            call.respond(
+                HttpStatusCode.Unauthorized,
+                Ack("error", "invalid or missing X-Admin-Token (or ci.upgrade_token not configured)")
+            )
             return@post
         }
         val isWindows = System.getProperty("os.name", "").lowercase().contains("windows")
