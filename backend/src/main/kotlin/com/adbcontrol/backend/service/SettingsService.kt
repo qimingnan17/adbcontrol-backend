@@ -338,24 +338,51 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
         }
 
         val base = restEndpoint.trimEnd('/')
-        val url = if (base.endsWith("/api/v5")) "$base/nodes" else "$base/api/v5/nodes"
+        val prefix = if (base.endsWith("/api/v5")) base else "$base/api/v5"
         val auth = "Basic " + java.util.Base64.getEncoder().encodeToString("$appId:$secret".toByteArray())
 
-        return try {
-            val response = httpClient.get(url) {
-                header("Authorization", auth)
+        // 依次探测候选端点，取第一个"能明确表态"的响应。
+        //
+        // 为什么不用 /api/v5/nodes：那是专有版/自建版的集群管理端点，
+        // EMQX Cloud Serverless 根本没有 —— 官方 Serverless API 只有
+        // clients / subscriptions / publish 三个。测 nodes 永远失败，
+        // 会让人误判成凭据错误。
+        //
+        // 为什么逐个试而不是只看状态码：EMQX Cloud 边缘对"未认证"和
+        // "端点不可用"都可能回裸 403（无 body），两种情况状态码一样，
+        // 只有多试几个真实存在的端点才能区分"我根本没调对接口"和
+        // "接口对了但没权限/网络被挡"。
+        val candidates = listOf(
+            "/clients" to "客户端管理",
+            "/subscriptions" to "订阅信息",
+        )
+
+        var lastStatus: HttpStatusCode? = null
+        var lastBody = ""
+        for ((path, label) in candidates) {
+            val url = "$prefix$path"
+            try {
+                val response = httpClient.get(url) { header("Authorization", auth) }
+                if (response.status == HttpStatusCode.OK) {
+                    return true to "EMQX REST API 连通成功！(HTTP 200 · $label)"
+                }
+                lastStatus = response.status
+                lastBody = response.bodyAsText().take(300)
+                // 401 = EMQX 明确判定凭据无效，这已经是最有信息量的结论，直接返回
+                if (response.status == HttpStatusCode.Unauthorized) {
+                    return false to "EMQX 鉴权失败 (HTTP 401)：App ID 与 App Secret 不匹配"
+                }
+            } catch (e: Exception) {
+                logger.warn("testEmqx probe $url failed", e)
+                return false to "连接 EMQX 异常 (${path}): ${e.message}"
             }
-            if (response.status == HttpStatusCode.OK) {
-                true to "EMQX REST API 连通成功！(HTTP 200)"
-            } else if (response.status == HttpStatusCode.Unauthorized) {
-                false to "EMQX 鉴权失败 (HTTP 401)：App ID 与 App Secret 不匹配"
-            } else {
-                false to "EMQX 返回状态码: ${response.status.value}"
-            }
-        } catch (e: Exception) {
-            logger.warn("testEmqx failed", e)
-            false to "连接 EMQX 异常: ${e.message}"
         }
+
+        val st = lastStatus?.value ?: "?"
+        val detail = if (lastBody.isBlank()) "响应体为空" else lastBody
+        return false to "EMQX 返回状态码: $st（$detail）。" +
+            "EMQX Cloud Serverless 只提供 /clients、/subscriptions、/publish 三个 API；" +
+            "若 App ID/Secret 正确仍失败，请确认该实例是否已启用部署 API 或存在来源 IP 限制"
     }
 
     /**
