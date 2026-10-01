@@ -233,6 +233,35 @@ class EmqxProxyService(private val config: BackendConfig) : AutoCloseable {
     suspend fun deleteAclRule(ruleId: String): EmqxResponse =
         proxyDelete("$aclRulesPath/${encode(ruleId)}")
 
+    /**
+     * 主动踢掉某台设备的在线连接(EMQX `DELETE /api/v5/clients/{clientid}`)。
+     *
+     * 删设备时必须做这件事:删 ACL 规则 / 删认证用户都**不会**断开已建立的
+     * MQTT 长连接,被控端会继续在线并持续上报,表现为"云端已删除但 App 还登着"。
+     * 踢连接是让端侧立刻感知失联的唯一手段(端侧重连时因账号已删而失败,
+     * 从而触发其自身的登出逻辑)。
+     *
+     * clientId 不等于 deviceId:实测被控端以 `device-{deviceId}` 作为 clientId,
+     * 而 username 才是裸 deviceId。因此两种形式都试一遍,谁命中算谁。
+     * 404/204 都视为"已不在线",不算失败。
+     */
+    suspend fun kickDevice(deviceId: String): EmqxResponse {
+        var last = EmqxResponse(HttpStatusCode.ServiceUnavailable.value, "")
+        for (candidate in listOf("device-$deviceId", deviceId)) {
+            val r = proxyDelete("/clients/${encode(candidate)}")
+            last = r
+            if (r.status in 200..299 || r.status == 404) return r
+        }
+        return last
+    }
+
+    /**
+     * 删除 built_in_database 授权源里的某个用户记录。
+     * 自建 EMQX 上有效;EMQX Cloud Serverless 返回 403(不开放),属预期。
+     */
+    suspend fun deleteAuthorizationUser(username: String): EmqxResponse =
+        proxyDelete("/authorization/sources/built_in_database/users/${encode(username)}")
+
     suspend fun publish(topic: String, payload: String, qos: Int = 1): EmqxResponse {
         // buildJsonObject 构造:topic/deviceId 含引号、反斜杠等字符时由序列化器正确转义,
         // 避免手拼 JSON 字符串的注入/格式损坏。
