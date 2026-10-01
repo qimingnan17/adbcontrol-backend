@@ -291,6 +291,38 @@ class DeviceCommandBridge(
     }
 
     /**
+     * 向单台设备推送一条 PUSH_DATA(用该设备自己的 sessionKey 签名)。
+     *
+     * 用于「某文件已就绪,请来拉取」这类点对点通知。与 [broadcastPush] 共用 push/{deviceId}
+     * 通道而不是新增 topic —— 受控端已订阅 push/{deviceId},EMQX ACL 也已放行,
+     * 新增 topic 反而要同步改两端订阅集合与 ACL 规则,链路更长更易漏。
+     *
+     * @return 是否成功发布(无配对会话或 EMQX 非 2xx 为 false)。
+     */
+    suspend fun pushToDevice(deviceId: String, payloadJson: String): Boolean {
+        val sessionKey = pairingService.sessionKeyFor(deviceId) ?: run {
+            logger.warn("pushToDevice rejected: no pairing session for deviceId={}", deviceId)
+            return false
+        }
+        val id = "push-" + UUID.randomUUID().toString().replace("-", "").take(16)
+        val timestamp = System.currentTimeMillis()
+        val envelope = CommandEnvelope(
+            id = id,
+            type = MessageType.PUSH_DATA.name,
+            payload = payloadJson,
+            timestamp = timestamp,
+            signature = HmacSigner.sign(HmacSigner.buildSigningData(payloadJson, id, timestamp), sessionKey),
+        )
+        val resp = emqx.publish(
+            MqttTopics.push(deviceId),
+            json.encodeToString(CommandEnvelope.serializer(), envelope),
+            qos = 1,
+        )
+        logger.info("pushToDevice deviceId={} status={}", deviceId, resp.status)
+        return resp.status in 200..299
+    }
+
+    /**
      * 下发任务栏通知(REMINDER)。按钮文字、是否要求签收受 [ReminderPayload] 控制。
      * 签收回报由受控端发 REMINDER_RESULT 到 result/{deviceId},经 ingestor 入库 task_ack。
      */

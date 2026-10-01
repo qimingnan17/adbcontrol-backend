@@ -23,6 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 class UpdateService(
     private val config: BackendConfig,
     private val databaseService: DatabaseService,
+    private val settingsService: SettingsService,
 ) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -130,6 +131,26 @@ class UpdateService(
      */
     fun verifyPublishToken(token: String?): Boolean {
         val expected = config.pmToken
+        if (expected.isBlank() || token.isNullOrBlank()) return false
+        return MessageDigest.isEqual(
+            token.toByteArray(Charsets.UTF_8),
+            expected.toByteArray(Charsets.UTF_8),
+        )
+    }
+
+    /**
+     * 校验 CI 部署触发令牌(ci.upgrade_token),仅放行 /api/admin/upgrade。
+     *
+     * 与 [verifyPublishToken] 分开的理由:pmToken 能向全部已配对设备推送 OTA 安装包,
+     * 攻击者拿到它即可远程下发任意 APK;而部署触发只会让主机拉取 GitHub 上最新构建。
+     * 两者影响面差一个量级,不能共用同一把钥匙。
+     *
+     * 每次都实时读文件而非用启动时的 config:Web 面板轮换令牌后应立即生效,不必重启后端。
+     */
+    fun verifyUpgradeToken(token: String?): Boolean {
+        val expected = runCatching { settingsService.getRawProperty("ci.upgrade_token") }
+            .getOrDefault("")
+            .ifBlank { config.ciUpgradeToken }
         if (expected.isBlank() || token.isNullOrBlank()) return false
         return MessageDigest.isEqual(
             token.toByteArray(Charsets.UTF_8),

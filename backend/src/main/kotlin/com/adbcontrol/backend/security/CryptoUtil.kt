@@ -34,6 +34,15 @@ object CryptoUtil {
         false
     }
 
+    /**
+     * SHA-256 摘要的十六进制小写表示。
+     *
+     * 主要用途:R2 的 S3 Secret Access Key = SHA-256 **hex** digest(API token value),
+     * 见 Cloudflare R2 官方文档的 "Get S3 API credentials from an API token"。
+     */
+    fun sha256Hex(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+
     private fun base64Decode(s: String): ByteArray = java.util.Base64.getDecoder().decode(s)
     private fun base64Encode(b: ByteArray): String = java.util.Base64.getEncoder().encodeToString(b)
 

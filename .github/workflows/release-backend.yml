@@ -79,24 +79,34 @@ jobs:
             --title "Backend Latest Release" \
             --notes "Automated backend release from commit $GITHUB_SHA"
 
-      - name: Notify Cloud PC to Auto-Upgrade
+      - name: Notify Cloud PC to Auto-Upgrade (best-effort)
+        # 云电脑在 NAT 后没有公网入站，只能经 Cloudflare 命名隧道回调本机。
+        # 回调地址与令牌在 Web 控制台「设置 → CI 部署」生成，复制到仓库 Secrets：
+        #   CLOUD_PC_UPGRADE_URL = https://<你的域名>/api/admin/upgrade
+        #   UPGRADE_TOKEN         = 与云电脑 secrets.properties 的 ci.upgrade_token 一致
+        # 本步骤只是把等待从 10 分钟缩短到秒级；缺失或失败都不阻塞发布，
+        # 云电脑端 update-poll.ps1 的出站轮询（每 10 分钟拉 latest Release）才是兜底。
+        continue-on-error: true
         env:
+          UPGRADE_URL: ${{ secrets.CLOUD_PC_UPGRADE_URL }}
           UPGRADE_TOKEN: ${{ secrets.UPGRADE_TOKEN }}
-          CUSTOM_URL: ${{ secrets.CLOUD_PC_UPGRADE_URL }}
         run: |
-          echo "Notifying Cloud PC to pull and deploy latest release..."
-          TOKEN="${UPGRADE_TOKEN:-adbcontrol-auto-upgrade-token-2026}"
-          
-          # 1. Custom URL (if configured)
-          if [ -n "$CUSTOM_URL" ]; then
-            echo "Trying custom URL: $CUSTOM_URL"
-            curl -s -X POST "$CUSTOM_URL" -H "X-Admin-Token: $TOKEN" || true
+          if [ -z "$UPGRADE_URL" ] || [ -z "$UPGRADE_TOKEN" ]; then
+            echo "::notice::未配置 CLOUD_PC_UPGRADE_URL / UPGRADE_TOKEN，跳过主动通知。"
+            echo "云电脑将在下一个轮询周期（≤10 分钟）自动部署本次构建。"
+            exit 0
           fi
-          
-          # 2. Native Public IPv6 direct route
-          echo "Triggering via Native IPv6..."
-          curl -s -g -X POST "http://[240e:981:9200:3:15f::3b1]:8080/api/admin/upgrade" -H "X-Admin-Token: $TOKEN" || true
-          
-          # 3. Cloudflare Tunnel fallback
-          echo "Triggering via Cloudflare Tunnel..."
-          curl -s -X POST "https://greater-integrated-bell-eligibility.trycloudflare.com/api/admin/upgrade" -H "X-Admin-Token: $TOKEN" || true
+          # 令牌绝不回显到日志，也不再提供硬编码兜底值 ——
+          # 兜底值一旦进过仓库就等于公开，任何人都能触发部署。
+          echo "Notifying cloud PC via tunnel to pull and deploy the new release..."
+          code=$(curl -s -o /tmp/upgrade-resp.txt -w '%{http_code}' -m 20 \
+            -X POST "$UPGRADE_URL" \
+            -H "X-Admin-Token: $UPGRADE_TOKEN" \
+            -H "Content-Type: application/json" || echo "000")
+          echo "HTTP $code"
+          case "$code" in
+            200) echo "Cloud PC triggered; it will pull the new release and hot-swap." ;;
+            401) echo "::warning::401 未授权 —— UPGRADE_TOKEN 与云电脑 ci.upgrade_token 不一致（若近期轮换过令牌需同步更新 Secret）。" ;;
+            000) echo "::warning::隧道不可达（连接超时/网络错误）。部署将由出站轮询兜底。" ;;
+            *)   echo "::warning::收到 HTTP $code: $(head -c 200 /tmp/upgrade-resp.txt)" ;;
+          esac

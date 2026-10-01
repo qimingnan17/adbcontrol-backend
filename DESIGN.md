@@ -1042,23 +1042,13 @@ class ScreenshotUploader(
 - 渠道:Play Store / 自建更新服务器
 - 首次启动:扫服务器 QR(含 `server_url` + `pairToken` + 主控端 `controllerId`)→ 与后端交换长期凭证
 
-### 10.7 Cloudflare 集成:SSO 登录与云资源绑定(2026-09-29 落地)
+### 10.7 Cloudflare 集成:授权与云资源绑定(2026-09-29 落地,2026-09-30 收紧)
 
-后端 [`CloudflareService`](backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareService.kt) 统一封装 Cloudflare API(`https://api.cloudflare.com/client/v4`,OkHttp 引擎,10s 超时),支撑两类能力:**管理员免密登录** 与 **云端资产自动发现/绑定**。
+后端 [`CloudflareService`](backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareService.kt) 统一封装 Cloudflare API(`https://api.cloudflare.com/client/v4`,OkHttp 引擎,10s 超时),支撑**云端资产自动发现/绑定**与 **OAuth 一键授权**。
 
-#### 10.7.1 三种 SSO 登录方式
+> **登录边界(2026-09-30 收紧)**:系统仅支持账号密码登录(`/api/login`)。原有的三种 CF 登录通道——Zero Trust Access 头免密登录(`cf-access-login`)、API Token 登录(`cf-token-login`,曾默认关)、Zero Trust OIDC 单点登录(`cf-oidc/*`)——已**全部移除**;随同删除的还有邮箱白名单策略(`cf.allowed_emails`)与 Token 登录开关(`cf.token_login_enabled`)。Cloudflare 凭据从此只用于云资源管理,与登录完全解耦:攻击面从"多种免密通道各自带身份校验边界"收敛为"单一密码登录 + 标准限流"。
 
-| 方式 | 端点 | 原理 | 适用场景 |
-| --- | --- | --- | --- |
-| Access 头探测 | `GET /api/auth/cf-access` + `POST /api/auth/cf-access-login` | 站点经 Cloudflare Tunnel + Zero Trust Access 保护时,Cloudflare 边缘注入 `Cf-Access-Authenticated-User-Email` 请求头,后端凭该头直接发放会话 | 管理端已置于 Access 策略之后,体验最顺(零交互) |
-| API Token 登录 | `POST /api/auth/cf-token-login` | 调 Cloudflare `/user/tokens/verify` 校验 Token 有效性,通过即发会话,并把 Token 自动写入 `cf.api_token` | 首次部署快速接管,顺手完成 Token 配置 |
-| OIDC 授权码 | `GET /api/auth/cf-oidc/authorize-url` → Cloudflare 授权页 → `GET /api/auth/cf-oidc/callback` | 标准 OIDC 授权码流,`authorize-url` 生成跳转地址(内存 `state` 缓存防 CSRF,10 分钟 TTL),回调置换身份后 302 回前端 | 正式的"Cloudflare 官方账号登录"入口 |
-
-OIDC 回调身份获取双保险:优先请求 OIDC `userinfo` 接口,失败则解析 `id_token` JWT payload(BaseUrl64 解码取 `email`/`name`/`sub`)。回调结果重定向回 `/dashboard?cf_sso=success` 或 `/login?cf_error=<原因>`。
-
-**管理员自动引导:** 三种 SSO 在管理员未初始化时都会以登录身份自动创建初始管理员(Access/OIDC 取邮箱前缀过滤为合法用户名,Token 登录固定 `admin` + 随机密码),免去"先账号密码初始化再绑 SSO"的两步操作。
-
-#### 10.7.2 云资源自动发现(`fetchAllResources`)
+#### 10.7.1 云资源自动发现(`fetchAllResources`)
 
 凭 API Token 聚合拉取,逐账户并发展开:
 
@@ -1066,8 +1056,7 @@ OIDC 回调身份获取双保险:优先请求 OIDC `userinfo` 接口,失败则�
 | --- | --- | --- |
 | Token 校验 | `/user/tokens/verify` | 前置校验,失败直接返回 |
 | 账户 | `/accounts` | 后续资源的枚举维度 |
-| Access 组织 | `/accounts/{id}/access/organizations` | 取首个 `auth_domain` 自动补填 `cf.team_domain`(仅当为空) |
-| 域名 | `/zones` | 用于隧道域名拼接兜底 |
+| 域名 | `/zones` | 用于隧道域名拼接;每条带所属 `accountId`/`accountName`(绑定必须用域名所属账户) |
 | 隧道 | `/accounts/{id}/tunnels?is_deleted=false` | 含 status 与连接数 |
 | R2 桶 | `/accounts/{id}/r2/buckets` | S3 Endpoint 按账户推导:`https://{accountId}.r2.cloudflarestorage.com` |
 | D1 数据库 | `/accounts/{id}/d1/database` | uuid / name / version |
@@ -1081,12 +1070,39 @@ OIDC 回调身份获取双保险:优先请求 OIDC `userinfo` 接口,失败则�
 - **`provision-tunnel` 隧道穿透**(设置页主入口):建/选隧道 → **合并**写 ingress(`putTunnelIngress` 先 GET 现有规则,保留其他主机名,只替换同名条目,末尾补 `http_status:404`)→ `bindTunnelDnsRoute` → 写回 `server.url`。可选 `enableMqttWss` 追加 `{ path:"/mqtt", service:"https://<emqx.host>:8084" }` 入口。
 - **`create-tunnel`**:仅创建远程托管隧道(`config_src=cloudflare`),不含入口规则。
 - **`bindings` 查询**:返回三类资产绑定状态布尔值与当前值,`isAllBound` 聚合判定供前端仪表盘展示。
-- **`apply-*` 系列**(`apply-tunnel`/`apply-r2`/`apply-oidc`/`apply-d1`):单资产定向应用,供设置页逐项"绑定"按钮调用。
+- **`apply-*` 系列**(`apply-tunnel`/`apply-r2`/`apply-d1`):单资产定向应用,供设置页逐项"绑定"按钮调用。
 - **`auto-bind` / `manual-bind`**(兼容保留):一键/批量绑定。`auto-bind` 决策:隧道取首个 `healthy`(否则首个)拼第一个 Zone(兜底 `trycloudflare.com`)→ `server.url`;R2 取首个桶;D1 取首个库。`manual-bind` 只更新非空字段,Secret 含 `******` 掩码时跳过不覆盖。设置页已不再调用这两个端点。
 
 #### 10.7.4 配置键与安全
 
-新增 `secrets.properties` 键:`cf.api_token`、`cf.team_domain`、`cf.oidc_client_id`、`cf.oidc_client_secret`、`cf.oidc_redirect_uri`;D1 绑定另有环境变量通道 `ADB_D1_DATABASE_ID` / `ADB_D1_DATABASE_NAME` / `ADB_D1_ACCOUNT_ID`(对应 `d1.database_*` / `d1.account_id`)。`GET /api/admin/settings` 响应新增 `cf` / `d1` 区块,Secret 一律 `maskSecret` 脱敏为 `******`。OIDC 回调端点是唯一公开的 Cloudflare 相关端点(Cloudflare 跳回时无法携带会话),其余全部内网限定。
+Cloudflare 相关 `secrets.properties` 键:`cf.api_token`、`cf.oauth_*`(OAuth 一键授权,见 10.8)、`cf.bootstrap_token`(R2 凭据生成);D1 绑定另有环境变量通道 `ADB_D1_DATABASE_ID` / `ADB_D1_DATABASE_NAME` / `ADB_D1_ACCOUNT_ID`(对应 `d1.database_*` / `d1.account_id`)。`GET /api/admin/settings` 响应含 `cf` / `d1` 区块,Secret 一律 `maskSecret` 脱敏为 `******`。所有 Cloudflare 管理端点全部受 Tailscale/本地/管理员会话守卫保护(唯一例外是 OAuth 回调,由 `state` 防 CSRF)。
+
+### 10.8 Cloudflare OAuth 一键授权与全自动配置(2026-09-30 落地)
+
+#### 10.8.1 OAuth 一键授权([`CloudflareOAuthService`](backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareOAuthService.kt))
+
+- 标准授权码流程:`GET .../cloudflare/oauth/authorize-url` 拉起官方授权页 → 回调 `GET .../cloudflare/oauth/callback` 换取 access/refresh token(内存 `state` 缓存防 CSRF,10 分钟 TTL);**回调端点注册在会话鉴权之外**(Cloudflare 跳回时无法携带会话),其余 OAuth 端点均需管理员会话;
+- 票据短期有效且不含 `API Tokens:Write`,内置 refresh 自动续期(提前 60s、Mutex 防并发刷新);断开授权写入 REVOKED 哨兵同时置空 access+refresh;
+- 凭据优先级(`resolveCfToken`):显式传入 > 手工 `cf.api_token` > OAuth 票据,保留粘贴 Token 通道逐步迁移。
+
+#### 10.8.2 R2 全自动配置(`provision-r2`)
+
+一键:建桶(幂等复用)→ 开 r2.dev 公共读域名(`PUT .../r2/buckets/{bucket}/domains/managed`,返回 `pub-xxx.r2.dev`)→ 动态查权限组(权限组 id 不透明,按名称 "Workers R2 Storage Bucket Item Write" 优先匹配)→ `POST /accounts/{id}/tokens` 生成**桶级** API Token → 推导 S3 凭据(`AccessKeyId = token.id`,`Secret = SHA-256 hex(token.value)`,复用 [`CryptoUtil.sha256Hex`](backend/src/main/kotlin/com/adbcontrol/backend/security/CryptoUtil.kt))→ `testR2` 实测 SigV4 签名连通 → 全部通过才落盘。
+
+**为什么需要 bootstrap token:** OAuth 票据没有 `API Tokens:Write`,子 token 也拿不到该权限,生成凭据必须一枚手工创建的「Account API Tokens:Edit」token(仅此一步)。
+
+#### 10.8.3 连接器自动安装([`ConnectorInstaller`](backend/src/main/kotlin/com/adbcontrol/backend/service/ConnectorInstaller.kt))
+
+`install-connector`:从 GitHub latest release 下载 cloudflared 二进制(流式落盘 + <1MB 错误响应拦截 + part 原子改名)→ `ProcessBuilder` 列表传参(免 shell 注入)执行 `service install <token>`;权限不足时明确回报并给出 `manualCommand` 兜底,不假装成功。
+
+#### 10.8.4 前端适配
+
+- 设置页新增 OAuth 卡片 / R2 全自动卡片 / 连接器自动安装;资源同步触发条件含 OAuth 连接态(此前只看手工 Token,导致授权后域名列表为空);隧道域名下拉标注所属账户(多账户下必须用域名所属账户绑定);
+- 登录页仅保留账号密码表单;仪表盘改响应 `cf_oauth=success` 回调。
+
+#### 10.8.5 登录通道收敛(同日)
+
+移除 cf-access / cf-token-login / cf-oidc 三通道及白名单策略(见 10.7 边界说明);`authRoutes` 签名简化为 `authRoutes(db)`,登录逻辑不再依赖 CloudflareService/SettingsService;`/api/setup-status` 不再下发 `cfTokenLoginEnabled`。
 
 
 ---
@@ -1284,13 +1300,22 @@ class SelfHostUpdateChannel(...) : UpdateChannel { /* 自建差分包 */
 - [x] 上报提速:Status 兜底 5→2 分钟/变化检测 30→10 秒、Location 15→5 分钟、Health 30→10 分钟;Web 首屏 bundle 拆 chunk(主入口 1.25MB → 60KB,element-plus 独立长缓存)
 - [x] 协议对拍测试:ReminderPayload/ReminderAck 序列化往返 + DeviceCommandBridge 新映射单测
 
+**2026-09-30 升级(OAuth 一键授权 + 登录收敛,详见 10.7/10.8):**
+
+- [x] Cloudflare OAuth 一键授权:授权码流程 + refresh 自动续期 + 断开哨兵;凭据优先级 显式 > 手工 Token > OAuth 票据
+- [x] R2 全自动配置:建桶 → r2.dev 公共域 → 动态权限组 → 桶级 S3 凭据(`SHA-256` 推导)→ 实测通过才落盘;需一枚手工 bootstrap token(仅此一步)
+- [x] cloudflared 连接器自动安装:latest release 下载 + `service install`,权限不足给手动命令兜底
+- [x] **登录通道收敛**:移除 CF Access 免密 / API Token / Zero Trust OIDC 三条登录通道及邮箱白名单(`cf.allowed_emails`)与 Token 登录开关(`cf.token_login_enabled`);仅保留账号密码登录,CF 凭据只用于云资源管理且仅管理员会话可操作
+- [x] 域名发现带所属账户(accountId/accountName),多账户绑定用域名所属账户;前端同步条件含 OAuth 连接态
+- [x] 文件中转(手机 ↔ 后端 ↔ Web):`device_file` 表 + HMAC 设备鉴权(`file:{deviceId}:{up|down}:{expiresAt}`)+ 下行经 `push/{deviceId}` 通知
+
 **2026-09-29 升级(Cloudflare 集成,详见 10.7):**
 
-- [x] SSO 登录三通道:Zero Trust Access 头探测免密登录、API Token 校验登录(自动保存 Token)、Zero Trust OIDC 授权码跳转登录(state 防 CSRF + userinfo/id_token 双路取身份);管理员未初始化时按登录身份自动建号
-- [x] 云资源自动发现:Token 校验后聚合拉取账户 / Access 组织 / Zones / Tunnels / R2 桶 / D1 数据库;Access 组织 auth_domain 自动补填 `cf.team_domain`
-- [x] 资产绑定端点族(`/api/admin/settings/cloudflare/*`):sync / bindings / provision-tunnel / create-tunnel / auto-bind / manual-bind / apply-tunnel / apply-r2 / apply-oidc / apply-d1,绑定结果持久化至 `secrets.properties`(`provision-tunnel` 采用**合并 ingress** 语义并支持 `enableMqttWss`)
+- [x] 云资源自动发现:Token 校验后聚合拉取账户 / Zones / Tunnels / R2 桶 / D1 数据库
+- [x] 资产绑定端点族(`/api/admin/settings/cloudflare/*`):sync / bindings / provision-tunnel / create-tunnel / auto-bind / manual-bind / apply-tunnel / apply-r2 / apply-d1,绑定结果持久化至 `secrets.properties`(`provision-tunnel` 采用**合并 ingress** 语义并支持 `enableMqttWss`)
 - [x] 配置面:`secrets.properties` 新增 `cf.*` 键组与 `d1.*` 键组(后者兼有 `ADB_D1_*` 环境变量通道);`GET /api/admin/settings` 响应新增 `cf` / `d1` 区块(脱敏)
 - [x] 安全与传输修缮:Session Cookie 允许经 HTTP Tailscale 访问、`/api/admin/settings/network` 诊断探针、settings/network 响应改具体数据类序列化、静态资源 Cache-Control / UTF-8 charset、同步 Web dist(去 Google Fonts、相对 API base、vue-router 4.5.1 修最小化回弹)
+- [x] ~~SSO 登录三通道~~(已于 2026-09-30 移除,见上)
 
 **已知遗留(未修,按优先级):**
 
