@@ -232,7 +232,7 @@ class SettingsService(private val config: BackendConfig) : AutoCloseable {
 
         // 原子写:先写同目录临时文件再 ATOMIC_MOVE 覆盖。此前 writeText 先截断后写,
         // 进程写盘中途崩溃会留下半截 secrets 文件,全部密钥丢失(实测风险)。
-        val tmp = java.nio.file.Files.createTempFile(file.parentFile.toPath(), "secrets", ".tmp")
+        val tmp = java.nio.file.Files.createTempFile(file.absoluteFile.parentFile.toPath(), "secrets", ".tmp")
         try {
             java.nio.file.Files.write(tmp, content.toByteArray(StandardCharsets.UTF_8))
             java.nio.file.Files.move(
