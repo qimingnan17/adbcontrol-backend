@@ -36,14 +36,14 @@ class UpdateService(
     init {
         // 启动时从 DB 恢复版本清单(DB 不可达则空表启动,publish 时再重试入库)
         val restored = runCatching { databaseService.listVersionManifests() }.getOrElse { emptyList() }
-        restored.forEach { row -> versions += rowToManifest(row) }
+        restored.forEach { row -> runCatching { versions += rowToManifest(row) } }
         if (restored.isNotEmpty()) {
             logger.info("Restored {} version manifest(s) from DB", restored.size)
         }
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun rowToManifest(row: Map<String, Any>): VersionManifest = VersionManifest(
+    private fun rowToManifest(row: Map<String, Any?>): VersionManifest = VersionManifest(
         versionCode = (row["versionCode"] as Number).toInt(),
         versionName = row["versionName"] as String,
         channel = row["channel"] as String,
@@ -51,7 +51,7 @@ class UpdateService(
         patchUrl = row["patchUrl"] as? String,
         patchFromVersionCode = (row["patchFromVersionCode"] as Number).toInt(),
         patchToVersionCode = (row["patchToVersionCode"] as Number).toInt(),
-        sha256 = row["sha256"] as String,
+        sha256 = (row["sha256"] as? String)?.let { normalizeSha256(it) },
         sizeBytes = (row["sizeBytes"] as Number).toLong(),
         releaseNotes = row["releaseNotes"] as? String ?: "",
         priority = runCatching { UpdatePriority.valueOf(row["priority"] as String) }
@@ -88,10 +88,88 @@ class UpdateService(
             patchUrl = patch?.patchUrl,
             patchFromVersionCode = patch?.patchFromVersionCode ?: 0,
             patchToVersionCode = patch?.patchToVersionCode ?: 0,
-            sha256 = latest.sha256,
+            sha256 = latest.sha256?.let { normalizeSha256(it) } ?: run {
+                // 旧行没有哈希:若是 GitHub 资产,后台补算(本次响应仍为 null,下次 check 即可带上)
+                ensureSha256Async(latest)
+                null
+            },
             sizeBytes = latest.sizeBytes,
             forceUpdate = latest.priority == UpdatePriority.CRITICAL,
         )
+    }
+
+    // ---------------------------------------------------------------- v2: OTA 完整性
+
+    /** 正在计算哈希的清单 key(versionCode/channel),防同一资产并发重复下载。 */
+    private val hashing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val hashExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ota-sha256").apply { isDaemon = true }
+    }
+    private val hashClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
+
+    /** 管理员手工登记某版本的 sha256。返回 null 表示成功,否则为错误信息。 */
+    fun setSha256(versionCode: Int, channel: String, sha256: String, repo: com.adbcontrol.backend.v2.V2Repository): String? {
+        val sha = normalizeSha256(sha256) ?: return "sha256 必须是 64 位十六进制"
+        val m = versions.firstOrNull { it.versionCode == versionCode && it.channel == channel } ?: return "版本不存在"
+        if (!repo.updateManifestSha256(versionCode, channel, sha)) return "写入失败(数据库不可达)"
+        versions.removeAll { it.versionCode == versionCode && it.channel == channel }
+        versions += m.copy(sha256 = sha)
+        return null
+    }
+
+    /** GitHub Release 资产缺哈希时后台下载并计算 SHA-256,回填 DB + 内存。 */
+    fun ensureSha256Async(m: VersionManifest) {
+        if (m.sha256 != null || !isGitHubAsset(m.fullApkUrl)) return
+        val key = "${m.versionCode}/${m.channel}"
+        if (!hashing.add(key)) return
+        hashExecutor.execute {
+            try {
+                val sha = computeRemoteSha256(m.fullApkUrl) ?: return@execute
+                databaseService.withConnection("ota.updateSha256", false) { c ->
+                    c.prepareStatement("UPDATE app_version_manifest SET sha256 = ? WHERE version_code = ? AND channel = ? AND full_apk_url = ?").use { ps ->
+                        ps.setString(1, sha); ps.setInt(2, m.versionCode); ps.setString(3, m.channel); ps.setString(4, m.fullApkUrl)
+                        ps.executeUpdate() > 0
+                    }
+                }
+                val current = versions.firstOrNull { it.versionCode == m.versionCode && it.channel == m.channel }
+                if (current != null && current.fullApkUrl == m.fullApkUrl) {
+                    versions.remove(current)
+                    versions += current.copy(sha256 = sha)
+                }
+                logger.info("OTA sha256 computed for v{}/{}: {}", m.versionCode, m.channel, sha)
+            } catch (t: Throwable) {
+                logger.warn("OTA sha256 compute failed for v{}/{}: {}", m.versionCode, m.channel, t.message)
+            } finally {
+                hashing.remove(key)
+            }
+        }
+    }
+
+    private fun computeRemoteSha256(url: String): String? {
+        val req = okhttp3.Request.Builder().url(url).get().build()
+        hashClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                logger.warn("OTA sha256 fetch {} -> HTTP {}", url, resp.code)
+                return null
+            }
+            val body = resp.body ?: return null
+            val md = MessageDigest.getInstance("SHA-256")
+            body.byteStream().use { input ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    md.update(buf, 0, n)
+                }
+            }
+            return md.digest().joinToString("") { "%02x".format(it) }
+        }
     }
 
     fun report(report: UpdateResultReport) {
@@ -106,6 +184,20 @@ class UpdateService(
 
     fun listReports(): List<UpdateResultReport> = reports.toList()
 
+    companion object {
+        private val SHA256_RE = Regex("^[0-9a-fA-F]{64}$")
+
+        /** 规范化为 64 位小写 hex;不合法返回 null。 */
+        fun normalizeSha256(raw: String): String? = raw.trim().takeIf { SHA256_RE.matches(it) }?.lowercase()
+
+        fun isGitHubAsset(url: String): Boolean = runCatching {
+            java.net.URI(url).host?.lowercase() in setOf(
+                "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+                "raw.githubusercontent.com", "codeload.github.com",
+            )
+        }.getOrDefault(false)
+    }
+
     /**
      * CI/Web 发布入口:校验 → 入库(失败中止,避免重启丢版本)→ 更新内存缓存。
      * 返回 null 表示成功,否则为用户可读错误信息。
@@ -115,11 +207,17 @@ class UpdateService(
         if (!manifest.fullApkUrl.startsWith("http://") && !manifest.fullApkUrl.startsWith("https://")) {
             return "fullApkUrl 必须是 http(s) URL"
         }
-        if (manifest.sha256.isBlank()) return "sha256 不能为空"
-        if (!databaseService.upsertVersionManifest(manifest)) return "清单入库失败(数据库不可达)"
+        val rawSha = manifest.sha256?.trim().orEmpty()
+        val sha = if (rawSha.isEmpty()) null else normalizeSha256(rawSha) ?: return "sha256 必须是 64 位十六进制"
+        if (sha == null && !isGitHubAsset(manifest.fullApkUrl)) {
+            return "sha256 不能为空(仅 GitHub Release 资产可由后端自动计算)"
+        }
+        val normalized = manifest.copy(sha256 = sha)
+        if (!databaseService.upsertVersionManifest(normalized)) return "清单入库失败(数据库不可达)"
 
         versions.removeAll { it.versionCode == manifest.versionCode && it.channel == manifest.channel }
-        versions += manifest
+        versions += normalized
+        if (sha == null) ensureSha256Async(normalized)
         logger.info("Published version: code={} name={} channel={} url={}",
             manifest.versionCode, manifest.versionName, manifest.channel, manifest.fullApkUrl)
         return null
