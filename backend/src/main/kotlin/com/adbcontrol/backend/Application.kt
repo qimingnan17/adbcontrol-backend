@@ -26,6 +26,12 @@ import com.adbcontrol.backend.service.SettingsService
 import com.adbcontrol.backend.service.TaskSchedulerService
 import com.adbcontrol.backend.service.TelemetryIngestService
 import com.adbcontrol.backend.service.UpdateService
+import com.adbcontrol.backend.v2.DevicePresence
+import com.adbcontrol.backend.v2.ExtensionRequestService
+import com.adbcontrol.backend.v2.PolicyTemplateService
+import com.adbcontrol.backend.v2.TimelineService
+import com.adbcontrol.backend.v2.V2Repository
+import com.adbcontrol.backend.v2.v2Routes
 import io.ktor.server.auth.authenticate
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -135,11 +141,20 @@ fun Application.module() {
     // cloudflared 连接器安装器:下载二进制并注册为系统服务（需管理员权限，失败会明确回报）
     val connectorInstaller = ConnectorInstaller()
     // Web -> 被控端命令桥(签名 + 正确 topic),以及 MQTT 遥测 ingestor(EMQX -> MySQL)
-    val commandBridge = DeviceCommandBridge(pairingService, emqxProxy)
+    // v2:新表仓储 + 进程内在线状态(离线命令队列 / 审计 / 时间线 / 申请延时)
+    val v2Repo = V2Repository(databaseService)
+    val presence = DevicePresence()
+    val commandBridge = DeviceCommandBridge(pairingService, emqxProxy, v2Repo, presence)
     val realtimeEvents = RealtimeEventService()
-    val telemetryIngest = TelemetryIngestService(config, databaseService, pairingService, realtimeEvents)
+    val extensionService = ExtensionRequestService(v2Repo, commandBridge, realtimeEvents)
+    val timelineService = TimelineService(v2Repo)
+    val policyTemplateService = PolicyTemplateService(v2Repo, databaseService, commandBridge)
+    val telemetryIngest = TelemetryIngestService(
+        config, databaseService, pairingService, realtimeEvents,
+        repo = v2Repo, presence = presence, bridge = commandBridge, extensions = extensionService,
+    )
     // cron 调度器:定时扫 task 表,通知走 reminder/ 通道,命令走 cmd/
-    val taskScheduler = TaskSchedulerService(databaseService, commandBridge)
+    val taskScheduler = TaskSchedulerService(databaseService, commandBridge, v2Repo)
 
     // 会话签名密钥:环境变量 > secrets.properties > 首次生成并持久化,
     // 保证后端重启后已登录管理员会话继续有效(此前每次重启随机,全体管理员被踢回登录页,实测问题)。
@@ -163,6 +178,7 @@ fun Application.module() {
         connectorInstaller.close()
         settingsService.close()
         taskScheduler.close()
+        extensionService.close()
         telemetryIngest.close()
         emqxProxy.close()
         databaseService.close()
@@ -171,6 +187,21 @@ fun Application.module() {
     // 启动遥测 ingestor(凭据缺失时内部打 warning 并跳过,不影响其余路由)。
     telemetryIngest.start()
     taskScheduler.start()
+    extensionService.start()
+    // v2:v2.0 给被控端 ACL 新增了 request/{deviceId} 发布权限。已配对设备的规则是在旧版本
+    // 配对时写入的,这里启动后异步按新规则集重写一遍(applyForDevice 幂等:scoped PUT 整体覆盖,
+    // 旧版 API 409 视为已存在),免得用户为了"申请延时"逐台重新配对。
+    Thread({
+        runCatching {
+            Thread.sleep(15_000)
+            kotlinx.coroutines.runBlocking {
+                for (deviceId in pairingService.allSessionDeviceIds()) {
+                    runCatching { aclService.applyForDevice(deviceId) }
+                        .onFailure { appLogger.warn("ACL resync failed for {}: {}", deviceId, it.message) }
+                }
+            }
+        }
+    }, "acl-resync-v2").apply { isDaemon = true }.start()
 
     // 路由:pair / renew / update / emqx-proxy / health + auth + admin
     routing {
@@ -190,6 +221,8 @@ fun Application.module() {
         // 因此必须挂在 authenticate 块之外，否则设备请求会被会话中间件拦掉。
         fileTransferRoutes(settingsService, databaseService, pairingService, commandBridge)
         updateRoutes(updateService, commandBridge)
+        // v2.0:/api/meta(公开)+ 申请延时 / 时间线 / 轨迹 / 围栏 / 趋势 / 策略模板 / 离线队列 / 审计
+        v2Routes(v2Repo, commandBridge, extensionService, timelineService, policyTemplateService, updateService)
         // SSE 实时事件流:设备状态/命令结果/签收/离线推给 Web 控制台(内部自带会话保护)
         realtimeRoutes(realtimeEvents)
         // APK 下载中转:/update/apk?url=<GitHub Release 链接>(check 响应里的直链会被改写指向这里)
@@ -204,7 +237,7 @@ fun Application.module() {
         webAppRoutes()
     }
 
-    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /api/admin/settings, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions")
+    appLogger.info("Routes mounted: /health, /api/health, /api/login, /api/me, /api/logout, /api/devices, /api/tasks, /api/pairing-tokens, /api/admin/settings, /pair, /renew, /update/check, /update/report, /update/apk(proxy), /emqx/devices, /emqx/subscriptions, v2: /api/meta /api/extension-requests /api/devices/{id}/timeline|locations|geofences|usage/trend|pending-commands /api/policy-templates /api/audit")
 }
 
 /** 入口:由 Ktor Gradle 插件的 application.mainClass 指向,委托 Netty EngineMain 读取 application.conf。 */

@@ -4,7 +4,10 @@ package com.adbcontrol.backend
  * 后端全局常量。
  */
 object BackendConstants {
-    const val VERSION = "0.1.0"
+    const val VERSION = "2.0.0"
+
+    /** 协议版本,与 shared [com.adbcontrol.shared.ProtocolVersion.CURRENT] 一致(GET /api/meta)。 */
+    const val PROTOCOL_VERSION = com.adbcontrol.shared.ProtocolVersion.CURRENT
 
     /** 临时 MQTT 凭证有效期:7 天(README 8.3)。 */
     const val CREDENTIAL_TTL_MS = 7L * 24 * 60 * 60 * 1000
