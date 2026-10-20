@@ -116,12 +116,34 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             "ALTER TABLE app_usage_daily ADD COLUMN icon_url VARCHAR(512) NULL",
             "ALTER TABLE task ADD COLUMN last_fired_at BIGINT NULL",
             "ALTER TABLE admin_user ADD COLUMN password_changed_at BIGINT UNSIGNED NOT NULL DEFAULT 0",
+            // ---- v2.0 迁移(新表在 schema.sql 里 CREATE TABLE IF NOT EXISTS,这里只补老表的列) ----
+            // OTA 完整性:sha256 改为可空 CHAR(64)(小写 hex),旧行的空串在读取时按 null 处理
+            "ALTER TABLE app_version_manifest MODIFY COLUMN sha256 CHAR(64) NULL",
+            "UPDATE app_version_manifest SET sha256 = NULL WHERE sha256 = '' OR CHAR_LENGTH(sha256) <> 64",
+            "UPDATE app_version_manifest SET sha256 = LOWER(sha256) WHERE sha256 IS NOT NULL",
         ).forEach { ddl ->
             runCatching {
                 ds.connection.use { conn -> conn.createStatement().use { it.execute(ddl) } }
             }.onFailure { logger.info("migrate skipped (likely exists): {}", it.message) }
         }
     }
+
+    /**
+     * v2:给 [V2Repository] 等新仓储用的连接借用入口。DB 不可达返回 [default],
+     * 异常记 warn 后同样返回 [default](与本类其余方法的 best-effort 语义一致)。
+     */
+    fun <T> withConnection(op: String, default: T, block: (Connection) -> T): T {
+        val ds = dataSource ?: ensureDataSource() ?: return default
+        return runCatching { ds.connection.use { block(it) } }.getOrElse {
+            if (it.message?.contains("Duplicate entry") != true) {
+                logger.warn("{} failed: {}", op, it.message)
+            }
+            default
+        }
+    }
+
+    /** DB 是否已配置且连接池可用(不做探活查询)。 */
+    fun isConfigured(): Boolean = (dataSource ?: ensureDataSource()) != null
 
     /** 检查数据库连接池存活状态(供健康检查路由 /health 调用) */
     fun isHealthy(): Boolean {
@@ -578,6 +600,8 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
             "app_usage_daily", "app_activity_log", "notification_log",
             "location_history", "execution_log", "task_ack", "task",
             "app", "device_status", "pair_session", "device",
+            // v2.0 新表(command_audit 审计记录有意保留,不随设备删除)
+            "extension_request", "device_event", "geofence", "pending_command",
         )
         return runCatching {
             ds.connection.use { conn ->
@@ -1075,8 +1099,12 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
         uploadedAt: Long,
         appName: String? = null,
         iconUrl: String? = null,
+        partial: Boolean = false,
     ) {
         val ds = dataSource ?: ensureDataSource() ?: return
+        // v2 partial=true(15 分钟中途快照):当日累计只增不减,取 max,防止乱序到达的
+        // 旧快照把已入库的更大值覆盖回去;常规整点上报(partial=false)仍以设备为准覆盖写。
+        val minutesExpr = if (partial) "GREATEST(usage_minutes, VALUES(usage_minutes))" else "VALUES(usage_minutes)"
         runCatching {
             ds.connection.use { conn ->
                 conn.prepareStatement(
@@ -1086,7 +1114,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                     ON DUPLICATE KEY UPDATE
                       app_name = COALESCE(VALUES(app_name), app_name),
                       icon_url = COALESCE(VALUES(icon_url), icon_url),
-                      usage_minutes = VALUES(usage_minutes), uploaded_at = VALUES(uploaded_at)
+                      usage_minutes = $minutesExpr, uploaded_at = GREATEST(uploaded_at, VALUES(uploaded_at))
                     """.trimIndent()
                 ).use { ps ->
                     ps.setString(1, deviceId)
@@ -1165,11 +1193,12 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                sha256, size_bytes, release_notes, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
+              sha256 = IF(VALUES(full_apk_url) <=> full_apk_url, COALESCE(VALUES(sha256), sha256), VALUES(sha256)),
               version_name = VALUES(version_name), priority = VALUES(priority),
               full_apk_url = VALUES(full_apk_url), patch_url = VALUES(patch_url),
               patch_from_version_code = VALUES(patch_from_version_code),
               patch_to_version_code = VALUES(patch_to_version_code),
-              sha256 = VALUES(sha256), size_bytes = VALUES(size_bytes),
+              size_bytes = VALUES(size_bytes),
               release_notes = VALUES(release_notes)
         """.trimIndent()
         return runCatching {
@@ -1183,7 +1212,8 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                     if (m.patchUrl == null) ps.setNull(6, java.sql.Types.VARCHAR) else ps.setString(6, m.patchUrl)
                     ps.setInt(7, m.patchFromVersionCode)
                     ps.setInt(8, m.patchToVersionCode)
-                    ps.setString(9, m.sha256)
+                    val sha = m.sha256?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+                    if (sha == null) ps.setNull(9, java.sql.Types.CHAR) else ps.setString(9, sha)
                     ps.setLong(10, m.sizeBytes)
                     if (m.releaseNotes.isBlank()) ps.setNull(11, java.sql.Types.VARCHAR) else ps.setString(11, m.releaseNotes)
                     ps.setLong(12, System.currentTimeMillis())
@@ -1198,7 +1228,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
     }
 
     /** 全部版本清单(version_code 降序)。DB 不可达返回空列表。 */
-    fun listVersionManifests(): List<Map<String, Any>> {
+    fun listVersionManifests(): List<Map<String, Any?>> {
         val ds = dataSource ?: ensureDataSource() ?: return emptyList()
         return runCatching {
             ds.connection.use { conn ->
@@ -1208,7 +1238,7 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                             "patch_from_version_code, patch_to_version_code, sha256, size_bytes, release_notes, created_at " +
                             "FROM app_version_manifest ORDER BY version_code DESC"
                     ).use { rs ->
-                        val list = mutableListOf<Map<String, Any>>()
+                        val list = mutableListOf<Map<String, Any?>>()
                         while (rs.next()) {
                             list += mapOf(
                                 "versionCode" to rs.getInt("version_code"),
@@ -1219,7 +1249,8 @@ class DatabaseService(config: BackendConfig) : AutoCloseable {
                                 "patchUrl" to rs.getString("patch_url"),
                                 "patchFromVersionCode" to rs.getInt("patch_from_version_code"),
                                 "patchToVersionCode" to rs.getInt("patch_to_version_code"),
-                                "sha256" to (rs.getString("sha256") ?: ""),
+                                // v2:未登记哈希返回 null(旧库空串同样视为 null)
+                                "sha256" to rs.getString("sha256")?.trim()?.lowercase()?.takeIf { it.length == 64 },
                                 "sizeBytes" to rs.getLong("size_bytes"),
                                 "releaseNotes" to (rs.getString("release_notes") ?: ""),
                                 "createdAt" to rs.getLong("created_at"),
