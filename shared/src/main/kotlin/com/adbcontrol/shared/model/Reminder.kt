@@ -20,6 +20,7 @@ data class ReminderPayload(
     val expectAck: Boolean = false,
     /** 关联任务 ID(定时任务场景);手动下发为 null */
     val taskId: Long? = null,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 /**
@@ -34,6 +35,7 @@ data class ReminderAck(
     /** 被点击的按钮文字;点击通知本体(非按钮)固定为 OPEN_TOKEN */
     val buttonText: String,
     val timestamp: Long = System.currentTimeMillis(),
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 ) {
     companion object {
         /** 点击通知本体时上报的 buttonText 占位值 */

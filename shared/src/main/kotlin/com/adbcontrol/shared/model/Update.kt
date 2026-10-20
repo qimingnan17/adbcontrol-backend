@@ -15,6 +15,7 @@ data class UpdateCheckRequest(
     val currentVersionCode: Int,
     val currentVersionName: String,
     val channel: String = "stable",            // stable / beta / internal
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 /** 服务器响应 */
@@ -32,10 +33,15 @@ data class UpdateCheckResponse(
     val patchUrl: String? = null,
     val patchFromVersionCode: Int = 0,
     val patchToVersionCode: Int = 0,
-    /** sha256 校验,下载后必须验 */
-    val sha256: String = "",
+    /**
+     * APK 的 SHA-256(64 位小写 hex)。v2:可空 —— 旧清单行未登记哈希时为 null,
+     * 被控端此时照常安装但记 warning;非空时下载后必须校验,不一致删包并上报
+     * [UpdateErrorCodes.HASH_MISMATCH]。
+     */
+    val sha256: String? = null,
     val sizeBytes: Long = 0,
     val forceUpdate: Boolean = false,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 ) {
     enum class UpdatePriority { NORMAL, HIGH, CRITICAL }
 }
@@ -49,4 +55,11 @@ data class UpdateResultReport(
     val errorMsg: String? = null,
     val durationMs: Long = 0,
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
+
+/** OTA 失败上报的错误码(写入 [UpdateResultReport.errorMsg])。 */
+object UpdateErrorCodes {
+    /** 下载完成后 SHA-256 与清单不一致:已删除安装包,未安装。 */
+    const val HASH_MISMATCH = "UPDATE_HASH_MISMATCH"
+}

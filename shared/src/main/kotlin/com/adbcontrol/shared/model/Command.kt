@@ -12,6 +12,7 @@ data class Command(
     val params: Map<String, String> = emptyMap(),
     /** 是否要求被控端回传执行结果（回报可选） */
     val expectResult: Boolean = true,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 @Serializable

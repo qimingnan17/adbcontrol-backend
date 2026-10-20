@@ -24,6 +24,7 @@ data class StatusReport(
     @SerialName("foregroundPkg")
     val foregroundPackage: String? = null,     // 当前前台 App 包名
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 ) {
     enum class NetworkType { WIFI, CELLULAR_2G, CELLULAR_3G, CELLULAR_4G, CELLULAR_5G, NONE }
 }
@@ -35,6 +36,7 @@ data class BatterySnapshot(
     val level: Int,
     val charging: Boolean,
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 // ---------- 5.3 位置(location/{deviceId}) ----------
@@ -52,6 +54,7 @@ data class LocationReport(
     /** 触发围栏事件名,无则 null */
     val fenceEvent: String? = null,
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 // ---------- 5.4 应用行为(activity/{deviceId}) ----------
@@ -65,6 +68,7 @@ data class ActivityReport(
     /** 前台持续时间(毫秒),APP_BACKGROUND 时填 */
     val durationMs: Long = 0,
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 ) {
     enum class ActivityEvent {
         APP_FOREGROUND,                        // 应用切到前台
@@ -82,6 +86,12 @@ data class UsageReport(
     /** 单条 = 一台设备一天一用户的多 App 时长 */
     val items: List<UsageItem>,
     val timestamp: Long,
+    /**
+     * v2:true = 当日累计的中途快照(每 15 分钟一次),后端按 (device, user, pkg, date)
+     * 取 max upsert;false/缺省 = 常规整点上报。
+     */
+    val partial: Boolean = false,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 @Serializable
@@ -108,6 +118,7 @@ data class HealthReport(
     val androidVersion: String,
     val appVersion: String,
     val timestamp: Long,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 ) {
     enum class ShizukuState { CONNECTED, NOT_AUTHORIZED, NOT_INSTALLED, UNSUPPORTED }
 }
