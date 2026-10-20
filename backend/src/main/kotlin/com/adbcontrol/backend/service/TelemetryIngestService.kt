@@ -1,6 +1,11 @@
 package com.adbcontrol.backend.service
 
 import com.adbcontrol.backend.config.BackendConfig
+import com.adbcontrol.backend.v2.DevicePresence
+import com.adbcontrol.backend.v2.ExtensionRequestService
+import com.adbcontrol.backend.v2.V2Repository
+import com.adbcontrol.shared.ProtocolVersion
+import com.adbcontrol.shared.model.ExtensionRequestPayload
 import com.adbcontrol.shared.model.ActivityReport
 import com.adbcontrol.shared.model.ExecutionResult
 import com.adbcontrol.shared.model.HealthReport
@@ -49,6 +54,14 @@ class TelemetryIngestService(
     private val db: DatabaseService,
     private val pairing: PairingService,
     private val realtime: RealtimeEventService? = null,
+    /** v2:时间线归档 / 审计回写 */
+    private val repo: V2Repository? = null,
+    /** v2:在线状态(命令桥据此决定直发或入离线队列) */
+    private val presence: DevicePresence? = null,
+    /** v2:离线队列投递 */
+    private val bridge: DeviceCommandBridge? = null,
+    /** v2:申请延时入库 */
+    private val extensions: ExtensionRequestService? = null,
 ) : AutoCloseable {
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -79,7 +92,7 @@ class TelemetryIngestService(
      */
     @Volatile private var subscribedAtMs: Long = 0L
 
-    /** wire 信封,与被控端 MqttEnvelope 字段一致。 */
+    /** wire 信封,与被控端 MqttEnvelope 字段一致(protocolVersion 另从原始 JSON 读,缺失 = v1)。 */
     @Serializable
     private data class Envelope(
         val id: String,
@@ -88,6 +101,13 @@ class TelemetryIngestService(
         val timestamp: Long,
         val signature: String? = null,
     )
+
+    /** 屏幕/充电上一次状态(进程内),用于检测跳变写 device_event。 */
+    private data class LastStatus(val screenOn: Boolean, val charging: Boolean)
+    private val lastStatus = java.util.concurrent.ConcurrentHashMap<String, LastStatus>()
+
+    /** 已记录过"旧协议版本"日志的设备,避免每条消息刷屏。 */
+    private val legacyLogged = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /** 启动并连接(凭据缺失时不启动,不抛异常)。 */
     @Synchronized
@@ -99,7 +119,7 @@ class TelemetryIngestService(
             logger.warn(
                 "MQTT ingestor disabled: set ADB_EMQX_INGEST_USERNAME / ADB_EMQX_INGEST_PASSWORD " +
                     "(create the account once in EMQX console with subscribe ACL on status/+, health/+, " +
-                    "location/+, activity/+, usage/+, result/+, device/offline/+)",
+                    "location/+, activity/+, usage/+, result/+, device/offline/+, request/+)",
             )
             return
         }
@@ -193,6 +213,8 @@ class TelemetryIngestService(
             "status/+", "health/+", "location/+",
             "activity/+", "usage/+", "result/+",
             "device/offline/+",
+            // v2:被控端请求(EXTENSION_REQUEST 申请延时)
+            "request/+",
         )
         val qos = IntArray(topics.size) { 1 }
         runCatching { c.subscribe(topics, qos) }
@@ -214,16 +236,25 @@ class TelemetryIngestService(
                 logger.debug("drop retained-LWT replay on {} ({}ms after subscribe)", topic, sinceSubscribe)
                 return
             }
-            db.markOffline(deviceId, System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            db.markOffline(deviceId, now)
+            presence?.set(deviceId, false)
+            repo?.insertDeviceEvent(deviceId, "OFFLINE", "设备离线", null, now)
             realtime?.emit(RealtimeEventService.Event.DeviceOffline(deviceId))
             return
         }
 
+        val raw = String(payload, Charsets.UTF_8)
         val envelope = runCatching {
-            json.decodeFromString(Envelope.serializer(), String(payload, Charsets.UTF_8))
+            json.decodeFromString(Envelope.serializer(), raw)
         }.getOrNull() ?: run {
             logger.debug("drop malformed envelope on {}", topic)
             return
+        }
+        // v2 协议版本:缺失视为 v1,只记日志并兼容处理(每台设备记一次)
+        val protocolVersion = ProtocolVersion.of(raw) ?: ProtocolVersion.LEGACY
+        if (ProtocolVersion.isLegacy(protocolVersion) && legacyLogged.add(deviceId)) {
+            logger.info("device {} speaks protocolVersion={} (current={}), handling in compat mode", deviceId, protocolVersion, ProtocolVersion.CURRENT)
         }
 
         // 分层鉴权:未配对设备的消息、无签名的消息、验签失败、超窗口一律丢。
@@ -249,6 +280,8 @@ class TelemetryIngestService(
         when {
             topic.startsWith(MqttTopics.STATUS_PREFIX) -> {
                 val r = json.decodeFromString(StatusReport.serializer(), envelope.payload)
+                markOnline(deviceId, r.timestamp)
+                recordStatusTransitions(deviceId, r)
                 db.upsertDeviceStatus(
                     deviceId = deviceId,
                     battery = r.battery,
@@ -263,6 +296,7 @@ class TelemetryIngestService(
             }
             topic.startsWith(MqttTopics.HEALTH_PREFIX) -> {
                 val r = json.decodeFromString(HealthReport.serializer(), envelope.payload)
+                markOnline(deviceId, r.timestamp)
                 db.applyHealth(
                     deviceId = deviceId,
                     shizukuConnected = r.shizuku == HealthReport.ShizukuState.CONNECTED,
@@ -312,7 +346,19 @@ class TelemetryIngestService(
                         uploadedAt = r.timestamp,
                         appName = item.appName,
                         iconUrl = item.iconUrl,
+                        partial = r.partial,
                     )
+                }
+            }
+            topic.startsWith(MqttTopics.REQUEST_PREFIX) -> {
+                when (envelope.type) {
+                    "EXTENSION_REQUEST" -> {
+                        val p = json.decodeFromString(ExtensionRequestPayload.serializer(), envelope.payload)
+                        val svc = extensions
+                        if (svc == null) logger.warn("EXTENSION_REQUEST from {} dropped: service not wired", deviceId)
+                        else svc.ingest(deviceId, p)
+                    }
+                    else -> logger.debug("ignore unknown request type {} on {}", envelope.type, topic)
                 }
             }
             topic.startsWith(MqttTopics.RESULT_PREFIX) -> {
@@ -338,9 +384,52 @@ class TelemetryIngestService(
                     durationMs = r.durationMs,
                     executedAt = r.timestamp,
                 )
+                // v2 审计:result 信封 id = 下发命令 id(被控端回填 commandId,优先用它)
+                val commandId = r.commandId.ifBlank { envelope.id }
+                repo?.updateAuditResult(commandId, if (r.success) "SUCCESS" else "FAILED", r.channel, r.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis())
                 realtime?.emit(RealtimeEventService.Event.CommandResult(deviceId, envelope.id, r.success, r.output))
             }
             else -> logger.debug("ignore unhandled ingest topic {}", topic)
+        }
+    }
+
+    /**
+     * 收到设备上行(status/health)即视为在线。离线 → 在线跳变(或本进程首次见到)时:
+     * 归档 ONLINE 事件(仅真实跳变)、推 SSE,并投递离线命令队列。
+     */
+    private fun markOnline(deviceId: String, ts: Long) {
+        val prev = presence?.set(deviceId, true)
+        if (prev == true) return
+        // 进程刚启动(prev=null)时以 DB 的上次状态判断是否真实跳变
+        val wasOnline = if (prev == null) repo?.deviceOnline(deviceId) ?: true else false
+        if (!wasOnline) {
+            repo?.insertDeviceEvent(deviceId, "ONLINE", "设备上线", null, ts.takeIf { it > 0 } ?: System.currentTimeMillis())
+            realtime?.emit(RealtimeEventService.Event.DeviceOnline(deviceId))
+        }
+        val b = bridge ?: return
+        ingestScope.launch {
+            runCatching { b.deliverPending(deviceId) }
+                .onFailure { logger.warn("deliverPending failed for {}: {}", deviceId, it.message) }
+        }
+    }
+
+    /** 屏幕亮灭 / 充电起止跳变 → device_event。本进程首次见到设备时只记基线不写事件。 */
+    private fun recordStatusTransitions(deviceId: String, r: StatusReport) {
+        val r2 = repo ?: return
+        val now = LastStatus(r.screenOn, r.charging)
+        val prev = lastStatus.put(deviceId, now) ?: return
+        val ts = r.timestamp.takeIf { it > 0 } ?: System.currentTimeMillis()
+        if (prev.screenOn != now.screenOn) {
+            r2.insertDeviceEvent(deviceId, if (now.screenOn) "SCREEN_ON" else "SCREEN_OFF", if (now.screenOn) "亮屏" else "熄屏", null, ts)
+        }
+        if (prev.charging != now.charging) {
+            r2.insertDeviceEvent(
+                deviceId,
+                if (now.charging) "CHARGING_START" else "CHARGING_STOP",
+                if (now.charging) "开始充电" else "停止充电",
+                "电量 ${r.battery}%",
+                ts,
+            )
         }
     }
 
