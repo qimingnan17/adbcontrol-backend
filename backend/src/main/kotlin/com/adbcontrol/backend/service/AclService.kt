@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory
  *
  * 为每个 `${appid}@${deviceId}` 用户名限定可 publish/subscribe 的 topic 前缀,防越权:
  * - 被控端只能 publish 自己的 result/{id} status/{id} health/{id} location/{id}
- *   activity/{id} usage/{id} pong/{id} device/offline/{id};
+ *   activity/{id} usage/{id} pong/{id} device/offline/{id} request/{id}(v2);
  * - 被控端只能 subscribe cmd/{id} reminder/{id} push/{id} ping/{id} controller/offline/+;
  * - 主控端订阅用通配 `+`、publish 到各被控 cmd/... 等(单独配主控用户名 ACL)。
  *
@@ -50,6 +50,8 @@ class AclService(
             "usage/$deviceId",
             "pong/$deviceId",
             "device/offline/$deviceId",
+            // v2:被控端请求(EXTENSION_REQUEST 申请延时)
+            "request/$deviceId",
         )
         val sub = listOf(
             "cmd/$deviceId",

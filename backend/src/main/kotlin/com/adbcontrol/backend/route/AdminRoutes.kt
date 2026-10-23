@@ -86,12 +86,23 @@ fun Route.adminRoutes(db: DatabaseService, pairing: PairingService, commandBridg
                     runCatching { k to v.jsonPrimitive.content }.getOrNull()
                 }?.toMap()
                 ?: emptyMap()
-            when (val r = commandBridge.dispatch(id, cmdType, args)) {
+            // v2:可选 ttlSeconds 覆盖离线队列有效期(收敛到 1 分钟..24 小时)
+            val ttlMs = body["ttlSeconds"]?.jsonPrimitive?.longOrNull?.let { it * 1000 }
+            val issuedBy = call.principal<UserIdPrincipal>()?.name ?: "admin"
+            when (val r = commandBridge.dispatch(id, cmdType, args, issuedBy = issuedBy, ttlOverrideMs = ttlMs)) {
                 is DeviceCommandBridge.DispatchResult.Ok ->
                     call.respond(buildJsonObject {
                         put("commandId", r.commandId)
                         put("status", r.emqxStatus)
                         put("emqx", r.emqxBody.toJsonElement())
+                        put("queued", false)
+                    })
+                // v2 离线队列:设备离线,202 Accepted,上线后投递
+                is DeviceCommandBridge.DispatchResult.Queued ->
+                    call.respond(HttpStatusCode.Accepted, buildJsonObject {
+                        put("commandId", r.commandId)
+                        put("queued", true)
+                        put("expiresAt", r.expiresAt)
                     })
                 is DeviceCommandBridge.DispatchResult.UnsupportedType ->
                     call.respond(

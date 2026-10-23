@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS app_version_manifest (
   patch_url               VARCHAR(512) NULL,
   patch_from_version_code INT          NOT NULL DEFAULT 0,
   patch_to_version_code   INT          NOT NULL DEFAULT 0,
-  sha256                  VARCHAR(128) NOT NULL,
+  sha256                  CHAR(64)     NULL,
   size_bytes              BIGINT       NOT NULL DEFAULT 0,
   release_notes           TEXT         NULL,
   created_at              BIGINT       NOT NULL,
@@ -214,4 +214,103 @@ CREATE TABLE IF NOT EXISTS device_file (
   delivered_at BIGINT       NOT NULL DEFAULT 0,
   INDEX idx_dev_created (device_id, created_at),
   INDEX idx_created (created_at)
+);
+
+-- ============================================================================
+-- v2.0 新表(docs/v2-protocol.md)。启动时同样以 CREATE TABLE IF NOT EXISTS 幂等执行,
+-- 老表的列变更见 DatabaseService.runSchema 的增量迁移列表。
+-- ============================================================================
+
+-- 申请延时(被控端 request/{deviceId} EXTENSION_REQUEST → 家长审批)
+-- request_id 为被控端生成的 UUID,UNIQUE 拦截 QoS 1 重发
+-- status: PENDING / APPROVED / DENIED / EXPIRED(PENDING 超 30 分钟自动 EXPIRED)
+CREATE TABLE IF NOT EXISTS extension_request (
+  id               BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  request_id       VARCHAR(64)  NOT NULL,
+  device_id        VARCHAR(64)  NOT NULL,
+  package_name     VARCHAR(128) NOT NULL,
+  app_label        VARCHAR(128) NULL,
+  minutes          INT          NOT NULL,
+  reason           VARCHAR(512) NULL,
+  status           VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
+  created_at       BIGINT       NOT NULL,
+  decided_at       BIGINT       NULL,
+  decided_by       VARCHAR(64)  NULL,
+  approved_minutes INT          NULL,
+  UNIQUE KEY uq_request_id (request_id),
+  INDEX idx_status_created (status, created_at),
+  INDEX idx_dev_created (device_id, created_at)
+);
+
+-- 设备事件归档(时间线用):ONLINE / OFFLINE / SCREEN_ON / SCREEN_OFF /
+-- CHARGING_START / CHARGING_STOP / TASK_RUN,由 ingestor 对比状态跳变、调度器发火时写入
+CREATE TABLE IF NOT EXISTS device_event (
+  id          BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  device_id   VARCHAR(64)  NOT NULL,
+  type        VARCHAR(32)  NOT NULL,
+  title       VARCHAR(256) NOT NULL,
+  detail      VARCHAR(1024) NULL,
+  occurred_at BIGINT       NOT NULL,
+  INDEX idx_dev_time (device_id, occurred_at)
+);
+
+-- 电子围栏(PUT /api/devices/{id}/geofences 全量替换,并下发 GEOFENCE_SET)
+CREATE TABLE IF NOT EXISTS geofence (
+  id            BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  device_id     VARCHAR(64)  NOT NULL,
+  name          VARCHAR(128) NOT NULL,
+  lat           DOUBLE       NOT NULL,
+  lng           DOUBLE       NOT NULL,
+  radius_meters DOUBLE       NOT NULL,
+  created_at    BIGINT       NOT NULL,
+  INDEX idx_dev (device_id)
+);
+
+-- 策略模板(payload_json 结构见 docs/v2-protocol.md §7)
+CREATE TABLE IF NOT EXISTS policy_template (
+  id           BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  name         VARCHAR(128) NOT NULL,
+  payload_json TEXT         NOT NULL,
+  created_at   BIGINT       NOT NULL,
+  updated_at   BIGINT       NOT NULL
+);
+
+-- 离线命令队列:设备离线时下发的命令先落库,设备上线(ONLINE)后重新签名投递。
+-- 过期(expires_at)未投递的标记 EXPIRED,永不发送。
+-- status: PENDING / SENT / EXPIRED
+-- payload_json 存未签名载荷,投递时用当时的 sessionKey + 新 timestamp 签名(避开 5 分钟重放窗口)
+CREATE TABLE IF NOT EXISTS pending_command (
+  id            BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  command_id    VARCHAR(64)  NOT NULL,
+  device_id     VARCHAR(64)  NOT NULL,
+  command_type  VARCHAR(64)  NOT NULL,
+  topic         VARCHAR(128) NOT NULL,
+  envelope_type VARCHAR(32)  NOT NULL,
+  payload_json  MEDIUMTEXT   NOT NULL,
+  status        VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
+  created_at    BIGINT       NOT NULL,
+  expires_at    BIGINT       NOT NULL,
+  sent_at       BIGINT       NULL,
+  UNIQUE KEY uq_command_id (command_id),
+  INDEX idx_dev_status (device_id, status),
+  INDEX idx_status_expires (status, expires_at)
+);
+
+-- 命令审计:每条下发(Web / 调度器 / 审批)一行,result 随回报更新。
+-- channel = 被控端回报的执行通道(Shizuku / Root / Accessibility / DeviceAdmin / Normal)
+-- result: SENT / QUEUED / PUBLISH_FAILED / EXPIRED / SUCCESS / FAILED
+CREATE TABLE IF NOT EXISTS command_audit (
+  id              BIGINT       PRIMARY KEY AUTO_INCREMENT,
+  command_id      VARCHAR(64)  NOT NULL,
+  device_id       VARCHAR(64)  NOT NULL,
+  type            VARCHAR(64)  NOT NULL,
+  payload_summary VARCHAR(512) NULL,
+  issued_by       VARCHAR(64)  NOT NULL,
+  issued_at       BIGINT       NOT NULL,
+  channel         VARCHAR(32)  NULL,
+  result          VARCHAR(32)  NOT NULL,
+  finished_at     BIGINT       NULL,
+  UNIQUE KEY uq_command_id (command_id),
+  INDEX idx_dev_issued (device_id, issued_at),
+  INDEX idx_issued (issued_at)
 );

@@ -15,4 +15,10 @@ data class ExecutionResult(
     val output: String = "",        // 命令输出 / 错误信息
     val durationMs: Long = 0,
     val timestamp: Long = System.currentTimeMillis(),
+    /**
+     * v2:实际执行该命令的通道(Shizuku / Root / Accessibility / DeviceAdmin / Normal)。
+     * v1 被控端不带此字段 → null。
+     */
+    val channel: String? = null,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )

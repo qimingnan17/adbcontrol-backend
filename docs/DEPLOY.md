@@ -34,7 +34,7 @@ AdbControl 采用**单方案部署**：一台 Windows 云电脑承载后端 + �
 
 ## 第 2 章 主力方案：Cloud PC / 主机自动化部署
 
-该方案已内置完整的自动化发布脚本 [`deploy-to-cloud.ps1`](file:///D:/手机控制/deploy-to-cloud.ps1)，可在本地开发机上一键完成远程部署。
+该方案已内置完整的自动化发布脚本 `deploy-to-cloud.ps1`（位于 monorepo 根目录，不在本仓库内），可在本地开发机上一键完成远程部署。
 
 ### 2.1 云主机端目录规范（`C:\adbcontrol\`）
 云主机预先规划以下目录结构：
@@ -125,7 +125,7 @@ Web 前端不单独部署 —— `adbcontrol-web/dist` 会由 Gradle 的 `syncWe
 
 ### 4.2 备份（仅方案 A 适用）
 
-内置备份脚本 [`backup-db.ps1`](file:///D:/手机控制/adbcontrol-backend/deploy/backup-db.ps1)：
+内置备份脚本 [`backup-db.ps1`](../deploy/backup-db.ps1)：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\adbcontrol\backup-db.ps1

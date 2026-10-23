@@ -2,7 +2,7 @@
 
 > **AdbControl 云端核心服务**：基于 **Kotlin / Ktor 3.x** 构建的高性能异步管理中枢，集成设备配对签发、EMQX 凭证生命周期管理、双向 MQTT 遥测摄取归档、Cron 任务计划调度、OTA 代理分发、SPA Web 前端静态一体化托管及 Tailscale 零信任配置保护。
 
-[![Kotlin](https://img.shields.io/badge/Kotlin-1.9+-7F52FF.svg?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.0-7F52FF.svg?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
 [![Ktor](https://img.shields.io/badge/Ktor-3.0+-087CFA.svg?logo=ktor&logoColor=white)](https://ktor.io/)
 [![MySQL](https://img.shields.io/badge/MySQL-8.0+%20%2F%20MariaDB-4479A1.svg?logo=mysql&logoColor=white)](https://www.mysql.com/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)](#)
@@ -17,46 +17,46 @@
    - 签发具备时效性的单次配对令牌（`pairToken`），生成配对二维码数据载荷；
    - 校验设备端发起的 `/pair` 请求，通过调用 EMQX REST API 自动为设备创建唯一的内置 MQTT 账号与密码；
    - 生成 32 字节高强度随机对称会话密钥（`sessionKey`），并持久化到 `pair_session` 数据库表中（服务重启后自动从数据库热恢复，防止已配对设备失联）。
-2. **命令下发与消息桥接（[`DeviceCommandBridge`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/DeviceCommandBridge.kt)）**：
+2. **命令下发与消息桥接（[`DeviceCommandBridge`](backend/src/main/kotlin/com/adbcontrol/backend/service/DeviceCommandBridge.kt)）**：
    - 接收 Web 控制台对受控端下发的远程 Shell、应用启停、屏幕截图或任务栏通知指令；
    - 使用设备专属 `sessionKey` 完成 HMAC-SHA256 签名，规范化封装为协议模型并通过 EMQX REST 发布接口即时推送至 `cmd/{deviceId}` 或 `reminder/{deviceId}` 主题。
-3. **高吞吐遥测摄取归档（[`TelemetryIngestService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/TelemetryIngestService.kt)）**：
+3. **高吞吐遥测摄取归档（[`TelemetryIngestService`](backend/src/main/kotlin/com/adbcontrol/backend/service/TelemetryIngestService.kt)）**：
    - 后端内置 Paho MQTT 客户端作为内部 Ingestor 监听 `status/+`、`location/+`、`activity/+`、`usage/+` 等主题；
    - 对受控设备上报的实时电量、网络强弱、前台焦点应用、GPS 定位历史、每日应用使用时长以及通知栏按钮点击签收（`REMINDER_RESULT`）进行全局幂等归档（通过 MySQL UNIQUE KEY 防 QoS 1 重试重复入库）。
-4. **分布式任务调度引擎（[`TaskSchedulerService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/TaskSchedulerService.kt)）**：
-   - 内置基于 `cron-utils` 的后台调度任务协程，支持秒级/分级 Cron 表达式；
+4. **分布式任务调度引擎（[`TaskSchedulerService`](backend/src/main/kotlin/com/adbcontrol/backend/service/TaskSchedulerService.kt)）**：
+   - 内置基于 `cron-utils` 的后台调度线程，使用 UNIX 5 字段 Cron 表达式（分钟粒度，30 秒轮询一次），业务时区默认 `Asia/Shanghai`（`ADB_SCHEDULER_ZONE` 可覆盖）；
    - 定时巡检生效中的任务，自动下发周期性通知、Shell 命令、应用时长配额和跨零点时间窗限制策略。
-5. **OTA 分发与网络加速代理（[`UpdateService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/UpdateService.kt) & [`ApkProxyRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/routes/ApkProxyRoutes.kt)）**：
+5. **OTA 分发与网络加速代理（[`UpdateService`](backend/src/main/kotlin/com/adbcontrol/backend/service/UpdateService.kt) & [`ApkProxyRoutes`](backend/src/main/kotlin/com/adbcontrol/backend/routes/ApkProxyRoutes.kt)）**：
    - 维护版本发布清单（`app_version_manifest`），提供受控端版本检查接口 `/update/check`；
    - 内置高速 APK 代理接口 `/update/apk?url=...`，在设备端拉取 GitHub Release 遭遇国内网络阻断时充当透明下载中转源。
-6. **一体化 SPA 前端静态资源托管（[`WebAppRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/WebAppRoutes.kt)）**：
+6. **一体化 SPA 前端静态资源托管（[`WebAppRoutes`](backend/src/main/kotlin/com/adbcontrol/backend/route/WebAppRoutes.kt)）**：
    - 优先挂载外部静态目录（`C:\adbcontrol\web` 或 `./web`），回退至 JAR 内置资源（`static/`）；
    - 支持完整的 HTML5 History 路由回退，前端无需额外 Nginx 即可实现单服务一键全功能交付；
    - 静态资源与 API 响应默认 **gzip 压缩**（`ktor-server-compression`），弱网下首屏关键资源体积由 ~1.66MB 降至 ~466KB（约 3.6×）。
-7. **Tailscale 零信任配置保护（[`SettingsRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/SettingsRoutes.kt) & [`NetworkSecurity`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/security/NetworkSecurity.kt)）**：
+7. **Tailscale 零信任配置保护（[`SettingsRoutes`](backend/src/main/kotlin/com/adbcontrol/backend/route/SettingsRoutes.kt) & [`NetworkSecurity`](backend/src/main/kotlin/com/adbcontrol/backend/security/NetworkSecurity.kt)）**：
    - 敏感配置操作（查看/修改 EMQX 密码、MySQL 连接串、R2 密钥）通过网络守卫层，严格限定来自 Tailscale 虚拟专网（`100.64.0.0/10`）或本地回环（`127.0.0.1`），杜绝公网直接暴露风险。
-8. **Cloudflare 云资源集成（[`CloudflareService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareService.kt)）**：
+8. **Cloudflare 云资源集成（[`CloudflareService`](backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareService.kt)）**：
    - 系统仅支持**账号密码登录**；Cloudflare 凭据仅用于云资源管理，不参与登录；
    - 凭借 Cloudflare API Token 自动发现账户下全部资源（域名 Zones、Tunnels 隧道、R2 存储桶、D1 数据库）；
    - 资源发现为**只读**（列出账户下有什么，不写配置）；所有绑定均为**逐个手动**确认（隧道域名 → `server.url`、R2 桶 → 截图存储、D1 → 数据库绑定），避免自动绑错资源，绑定结果持久化至 `secrets.properties`。
-9. **全双工 SSE 实时事件流（[`RealtimeEventService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/RealtimeEventService.kt) & [`RealtimeRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/route/RealtimeRoutes.kt)）**：
+9. **全双工 SSE 实时事件流（[`RealtimeEventService`](backend/src/main/kotlin/com/adbcontrol/backend/service/RealtimeEventService.kt) & [`RealtimeRoutes`](backend/src/main/kotlin/com/adbcontrol/backend/route/RealtimeRoutes.kt)）**：
    - 提供 `/api/events` Server-Sent Events 端点，实现毫秒级事件推送；
-   - 涵盖设备心跳与电量网络 (`device_status`)、设备掉线 (`device_offline`)、指令执行结果 (`command_result`)、任务栏通知签收回报 (`reminder_ack`)，配合前端实现零等待响应。
-10. **自适应配对二维码与动态 Origin 检测（[`PairingService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/PairingService.kt)）**：
+   - 涵盖设备心跳与电量网络 (`device_status`)、设备掉线 (`device_offline`)、设备上线 (`device_online`，v2)、指令执行结果 (`command_result`)、任务栏通知签收回报 (`reminder_ack`)、申请延时 (`extension_request`，v2)，配合前端实现零等待响应。
+10. **自适应配对二维码与动态 Origin 检测（[`PairingService`](backend/src/main/kotlin/com/adbcontrol/backend/service/PairingService.kt)）**：
    - 生成配对令牌时，自动结合客户端请求来源（`X-Forwarded-Host` / `Host` / `Origin`）智能推导真实服务端外部访问地址；
    - 彻底解决默认配置占位域名（`example.com`）导致移动端 App 扫码请求报错 `UnknownHostException` 的问题。
-11. **纯内存用户与凭据降级存储（[`DatabaseService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/DatabaseService.kt)）**：
+11. **纯内存用户与凭据降级存储（[`DatabaseService`](backend/src/main/kotlin/com/adbcontrol/backend/service/DatabaseService.kt)）**：
    - 在开发环境、CI 测试或轻量化部署未接入 MySQL 实例时，自动启用并发线程安全的内存用户管理与令牌存储，保障控制台登录、配对与鉴权全链路无阻断运行。
-12. **文件中转（手机 ↔ 后端 ↔ Web，[`FileTransferRoutes`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/routes/FileTransferRoutes.kt) & [`DeviceFileStore`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/DeviceFileStore.kt)）**：
+12. **文件中转（手机 ↔ 后端 ↔ Web，[`FileTransferRoutes`](backend/src/main/kotlin/com/adbcontrol/backend/routes/FileTransferRoutes.kt) & [`DeviceFileStore`](backend/src/main/kotlin/com/adbcontrol/backend/service/DeviceFileStore.kt)）**：
    - **上行**：手机 `POST /api/files/device-upload` 把字节流交给后端落盘并登记，Web 控制台可列表 / 下载；
    - **下行**：Web `POST /api/files/send` 上传后，后端落盘并经 `push/{deviceId}`（复用现有 PUSH_DATA 通道，不新增 topic/ACL）通知手机，手机凭短期签名拉取 `GET /api/files/{id}/download`；
    - **为什么不让两端直连对象存储**：EMQX 单消息上限 1MB，文件必须走 HTTP 旁路；中转层落在后端本地磁盘（`ADB_FILES_DIR`），零新增依赖与密钥，DB 抖动时退回内存索引仍然可用；
    - **设备鉴权**：无状态 HMAC，待签串 `file:{deviceId}:{up|down}:{expiresAt}`，sessionKey 来自配对签发，手机端自己就能算，无需先向后端要票据。
 13. **Cloudflare 资源全自动配置（R2 建桶/凭据 + 连接器安装）**：
    - R2：一键完成「建桶 → 开 r2.dev 公共读域名 → 生成桶级 S3 凭据 → 实测校验 → 落盘」；凭据校验不通过就不写配置，避免错凭据到处 403；
-   - 连接器：下载 cloudflared 并 `service install` 注册为系统服务（[`ConnectorInstaller`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/ConnectorInstaller.kt)）；需管理员/root，失败时明确回报原因并给出手动命令；
+   - 连接器：下载 cloudflared 并 `service install` 注册为系统服务（[`ConnectorInstaller`](backend/src/main/kotlin/com/adbcontrol/backend/service/ConnectorInstaller.kt)）；需管理员/root，失败时明确回报原因并给出手动命令；
    - 硬边界：Cloudflare 的 OAuth 票据没有 `API Tokens:Write`，无法签发长期 Token，因此 R2 的 S3 凭据需一枚手工创建的 bootstrap token（仅此一步）。
-14. **Cloudflare OAuth 一键授权（[`CloudflareOAuthService`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareOAuthService.kt)）**：
+14. **Cloudflare OAuth 一键授权（[`CloudflareOAuthService`](backend/src/main/kotlin/com/adbcontrol/backend/service/CloudflareOAuthService.kt)）**：
    - 标准授权码流程：`GET .../cloudflare/oauth/authorize-url` 拉起官方授权页 → 回调 `GET .../cloudflare/oauth/callback` 自动换取 access/refresh token；
    - 票据短期有效（且不含 `API Tokens:Write`，无法再签发长期 Token），因此内置 **refresh 自动续期**（提前 60s、互斥防并发刷新）；
    - 凭据优先级：显式传入 > 手工 API Token > OAuth 票据，因此**保留原有粘贴 Token 通道**，逐步迁移不破坏兼容。
@@ -105,7 +105,7 @@ adbcontrol-backend/
 后端配置遵循 **环境变量 > `secrets.properties` 文件 > 内部已知默认值** 的逐级覆盖策略。
 
 ### 候选配置文件搜索路径
-[`BackendConfig.kt`](file:///D:/手机控制/adbcontrol-backend/backend/src/main/kotlin/com/adbcontrol/backend/config/BackendConfig.kt) 启动时会依序尝试加载以下路径的 `secrets.properties`：
+[`BackendConfig.kt`](backend/src/main/kotlin/com/adbcontrol/backend/config/BackendConfig.kt) 启动时会依序尝试加载以下路径的 `secrets.properties`：
 1. `C:\adbcontrol\secrets.properties`（云电脑主力路径）
 2. `secrets.properties`（当前工作目录）
 3. `../secrets.properties` 至 `../../../secrets.properties`（开发环境逐级上探）
@@ -136,6 +136,7 @@ adbcontrol-backend/
 | `ADB_D1_DATABASE_ID` | `d1.database_id` | *(可选)* | 绑定的 Cloudflare D1 数据库 UUID |
 | `ADB_D1_DATABASE_NAME` | `d1.database_name` | *(可选)* | 绑定的 D1 数据库名称 |
 | `ADB_D1_ACCOUNT_ID` | `d1.account_id` | *(可选)* | D1 所属 Cloudflare Account ID |
+| `ADB_SCHEDULER_ZONE` | —（仅环境变量） | `Asia/Shanghai` | 业务时区：cron 调度、时间线 / 轨迹 / 趋势的 `date` 按此时区切日 |
 | `ADB_FILES_DIR` | —（仅环境变量） | `C:\adbcontrol\files` / `./data/files` | 文件中转落盘目录（手机 ↔ 后端 ↔ Web 的暂存区） |
 | `ADB_R2_PUBLIC_BASE_URL` | `r2.public_base_url` | *(可选)* | 对象公共访问基址（如 r2.dev 域名），由 R2 一键配置自动写入 |
 | —（仅文件键） | `cf.bootstrap_token` | *(可选敏感项)* | **高危**：带「Account API Tokens:Edit」的 bootstrap token，用于自动生成 R2 桶级 S3 凭据 |
@@ -143,7 +144,7 @@ adbcontrol-backend/
 | —（仅文件键） | `cf.oauth_client_secret` | *(可选敏感项)* | Cloudflare OAuth 应用 Client Secret |
 | —（仅文件键） | `cf.oauth_scopes` | `offline_access` | 覆盖默认授权 scope（空格分隔） |
 | —（自动写入） | `cf.oauth_access_token` / `cf.oauth_refresh_token` / `cf.oauth_expires_at` | *(自动)* | 授权后由后端自动写入并续期，无需手工维护 |
-| `SESSION_SECRET` | `session.secret` | *(自动或 64 字节随机串)* | 用于 Ktor Session Cookie 签名的密钥 |
+| `ADB_SESSION_SECRET` | `session.secret` | *(自动或 64 字节随机串)* | 用于 Ktor Session Cookie 签名的密钥 |
 
 ---
 
@@ -184,24 +185,35 @@ adbcontrol-backend/
 ### 认证与管理初始化
 - `GET /api/setup-status`：检查系统是否已初始化管理员（若未初始化，前端自动切换至首次设置页）。
 - `POST /api/setup`：首次设置管理员用户名与密码（仅当 `admin_user` 表为空时开放，防篡改）。
-- `POST /api/login`：管理员登录验证，成功后下发加密安全的 Session Cookie。
+- `POST /api/login`：管理员账号密码登录（带登录限流），成功后下发 HMAC 签名的 HttpOnly Session Cookie。
+- `POST /api/change-password`：修改密码（改密后此前签发的全部会话立即失效）。
 - `GET /api/me`：获取当前登录管理员身份及权限。
 - `POST /api/logout`：注销当前会话。
 
-> **登录方式说明**：系统仅支持账号密码登录（`/api/login`）。Cloudflare 的 Access 免密登录、Zero Trust OIDC 单点登录与 API Token 登录通道已全部移除；Cloudflare OAuth 一键授权仅用于云资源管理凭据，与登录无关。
+> **登录方式说明（以本节为准）**：系统**仅支持账号密码登录**（`/api/login`），没有 SSO / OIDC / Cloudflare Access 免密 / API Token 登录，也没有第三方账号登录。Cloudflare 的 Access 免密登录、Zero Trust OIDC 单点登录与 API Token 登录通道已于 2026-09-30 全部移除；Cloudflare OAuth 一键授权仅用于云资源管理凭据，与登录无关。其它文档或配套仓库若出现与此不一致的描述，均以本节为准。
 
 ### 业务与设备管理
 - `GET /api/devices`：查询已注册设备清单及最新在线状态与电量。
-- `GET /api/devices/{deviceId}/status`：查询单台设备详细遥测数据（网络、前台应用、权限等）。
-- `POST /api/devices/{deviceId}/command`：向设备下发指令（Shell、应用控制、截图、输入模拟）。
-- `POST /api/devices/{deviceId}/screenshot`：下发截屏触发指令。
+- `GET /api/devices/{deviceId}`：单台设备概览（`overview`：网络、前台应用、权限、当日使用时长等）。
+- `GET /api/devices/{deviceId}/commands?limit=`：最近命令执行记录。
+- `POST /api/devices/{deviceId}/commands`：向设备下发指令 `{type, args, ttlSeconds?}`（Shell、应用控制、截图 `screencap`、输入模拟、通知 `notify`、应用时长 `app_time_*`）。设备在线返回 200 `{commandId, status, queued:false}`；**v2 起设备离线时返回 202 `{commandId, queued:true, expiresAt}`**，命令进入离线队列，上线后投递。
 - `DELETE /api/devices/{deviceId}`：从系统解绑并删除指定设备，同步注销其 MQTT 账号。
 
 ### 任务计划与签收
-- `GET /api/tasks`：查询 Cron 定时任务列表。
-- `POST /api/tasks`：新建定时任务（通知、Shell 命令、应用时长限制、时段禁闭）。
-- `DELETE /api/tasks/{taskId}`：删除指定任务。
-- `GET /api/tasks/{taskId}/ack`：查看该任务在各受控设备上的按钮签收状态与时间明细。
+- `GET /api/tasks?deviceId=`：查询 Cron 定时任务列表。
+- `POST /api/tasks` / `PUT /api/tasks/{id}`：新建 / 部分更新定时任务（通知、Shell 命令、应用时长限制、时段禁闭）。
+- `DELETE /api/tasks/{id}`：删除指定任务。
+- `GET /api/task-acks?taskId=`：查看任务通知在各受控设备上的按钮签收状态与时间明细。
+
+### v2.0 新增接口（完整契约见 [docs/v2-protocol.md](docs/v2-protocol.md)）
+- `GET /api/meta`（公开）：`{protocolVersion, serverVersion}`。
+- `GET /api/extension-requests?status=` / `POST /api/extension-requests/{requestId}/approve` / `POST /api/extension-requests/{requestId}/deny`：申请延时审批（SSE 事件 `extension_request`）。
+- `GET /api/devices/{id}/timeline?date=` / `GET /api/devices/{id}/locations?date=` / `GET|PUT /api/devices/{id}/geofences`：时间线、轨迹、电子围栏。
+- `GET /api/devices/{id}/usage/trend?days=7|30`：使用趋势。
+- `GET|POST /api/policy-templates`、`GET|PUT|DELETE /api/policy-templates/{id}`、`POST /api/policy-templates/{id}/apply`：策略模板。
+- `GET /api/devices/{id}/pending-commands`：离线命令队列（只读）。
+- `GET /api/audit?deviceId=&from=&to=`：命令审计。
+- `PUT /api/updates/{versionCode}/sha256`：管理员登记 OTA 安装包 SHA-256。
 
 ### 令牌与配对交互
 - `GET /api/pairing-tokens`：获取令牌列表（分为待使用、已使用及已过期列表）。
@@ -253,7 +265,7 @@ adbcontrol-backend/
 与 MQTT 信封同口径（见 shared `HmacSigner`），有效期校验复用协议既有的 ±5 分钟重放窗口。
 
 ### 升级与代理通道
-- `GET /update/check`：受控端版本更新检测接口。
+- `GET /update/check`：受控端版本更新检测接口（v2：响应 `sha256` 可为 `null`，表示旧清单未登记哈希）。
 - `GET /update/apk?url=...`：APK 极速中转下载代理接口（支持多镜像容灾）。
 
 ---

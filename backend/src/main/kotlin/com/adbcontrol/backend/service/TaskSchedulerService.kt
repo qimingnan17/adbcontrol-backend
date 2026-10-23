@@ -1,5 +1,7 @@
 package com.adbcontrol.backend.service
 
+import com.adbcontrol.backend.v2.BusinessZone
+import com.adbcontrol.backend.v2.V2Repository
 import com.cronutils.model.CronType
 import com.cronutils.model.definition.CronDefinitionBuilder
 import com.cronutils.model.time.ExecutionTime
@@ -14,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.concurrent.Executors
@@ -36,6 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TaskSchedulerService(
     private val db: DatabaseService,
     private val bridge: DeviceCommandBridge,
+    /** v2:写 device_event(TASK_RUN)供时间线使用;null 时不归档。 */
+    private val repo: V2Repository? = null,
 ) : AutoCloseable {
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -68,8 +73,7 @@ class TaskSchedulerService(
         // 显式指定业务时区:管理员按本地(北京)时间配置 cron。JVM 默认时区在
         // Docker/Fly 默认镜像下是 UTC,会让所有任务晚 8 小时触发(实测问题)。
         // 可用环境变量 ADB_SCHEDULER_ZONE 覆盖,如 Asia/Shanghai。
-        val zone = runCatching { ZoneId.of(System.getenv("ADB_SCHEDULER_ZONE") ?: "Asia/Shanghai") }
-            .getOrElse { ZoneId.of("Asia/Shanghai") }
+        val zone: ZoneId = BusinessZone.zone
         val nowZoned = ZonedDateTime.now(zone)
         // 窗口取轮询周期 ~2 倍,容忍一轮超时丢 tick
         val windowStart = nowZoned.minusNanos(TimeUnit.MILLISECONDS.toNanos(POLL_MS * 2))
@@ -110,17 +114,28 @@ class TaskSchedulerService(
         // 先用 fireAt 占位再放发,避免长下发期间下次 tick 重发同一时刻
         lastFire = lastFire + (taskId to fireAt)
         scope.launch {
+            val issuedBy = "scheduler:task#$taskId"
             for (devId in targets) {
                 val r = if (type == "notify") {
-                    bridge.dispatchReminder(devId, args, taskId = taskId)
+                    bridge.dispatchReminder(devId, args, taskId = taskId, issuedBy = issuedBy)
                 } else {
-                    bridge.dispatch(devId, type, args)
+                    bridge.dispatch(devId, type, args, issuedBy = issuedBy)
                 }
-                when (r) {
-                    is DeviceCommandBridge.DispatchResult.Ok ->
+                val outcome = when (r) {
+                    is DeviceCommandBridge.DispatchResult.Ok -> {
                         logger.info("task {} fired -> {} ({})", taskId, devId, type)
-                    else -> logger.warn("task {} fire failed -> {}: {}", taskId, devId, r)
+                        "已下发"
+                    }
+                    is DeviceCommandBridge.DispatchResult.Queued -> {
+                        logger.info("task {} queued (device offline) -> {} ({})", taskId, devId, type)
+                        "设备离线,已进入离线队列"
+                    }
+                    else -> {
+                        logger.warn("task {} fire failed -> {}: {}", taskId, devId, r)
+                        "下发失败"
+                    }
                 }
+                repo?.insertDeviceEvent(devId, "TASK_RUN", "定时任务 #$taskId 执行($type)", outcome, fireAt)
             }
         }
     }
@@ -144,6 +159,31 @@ class TaskSchedulerService(
                 ExecutionTime.forCron(CRON_PARSER.parse(expr)).nextExecution(windowStart).orElse(null)
             }.getOrNull() ?: return null
             return if (!next.isAfter(now)) next.toInstant().toEpochMilli() else null
+        }
+
+        /** 解析 "HH:mm"(00:00..23:59),非法返回 null。 */
+        internal fun parseHhMm(raw: String?): LocalTime? {
+            val m = Regex("^([01]?\\d|2[0-3]):([0-5]\\d)$").matchEntire(raw?.trim() ?: return null) ?: return null
+            return LocalTime.of(m.groupValues[1].toInt(), m.groupValues[2].toInt())
+        }
+
+        /**
+         * 时间窗口判断,支持跨零点(与被控端 app_time_window 语义一致):
+         * - start < end:[start, end) 当天内;
+         * - start > end:跨零点,[start, 24:00) ∪ [00:00, end);
+         * - start == end:空窗口(恒 false)。
+         */
+        internal fun isWithinWindow(start: LocalTime, end: LocalTime, t: LocalTime): Boolean = when {
+            start == end -> false
+            start < end -> !t.isBefore(start) && t.isBefore(end)
+            else -> !t.isBefore(start) || t.isBefore(end)
+        }
+
+        /** 窗口长度(分钟),跨零点按次日计;start == end 返回 0。 */
+        internal fun windowLengthMinutes(start: LocalTime, end: LocalTime): Int {
+            val s = start.hour * 60 + start.minute
+            val e = end.hour * 60 + end.minute
+            return ((e - s) % 1440 + 1440) % 1440
         }
 
         /** 校验 UNIX cron 表达式是否合法(创建/更新任务时预校验,避免静默永不执行)。 */

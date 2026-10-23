@@ -3,7 +3,9 @@ package com.adbcontrol.backend.service
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.serialization.Serializable
+import com.adbcontrol.backend.v2.ExtensionRequestRow
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import org.slf4j.LoggerFactory
 
 /**
@@ -29,6 +31,8 @@ class RealtimeEventService {
         val success: Boolean? = null,
         val output: String? = null,
         val ts: Long = System.currentTimeMillis(),
+        /** v2:事件携带的完整行(extension_request 事件 = extension_request 表行) */
+        val data: JsonElement? = null,
     )
 
     sealed class Event {
@@ -55,6 +59,15 @@ class RealtimeEventService {
         ) : Event()
 
         data class DeviceOffline(override val deviceId: String) : Event()
+
+        /** v2:申请延时新建 / 审批 / 过期,SSE 事件名 extension_request。 */
+        data class ExtensionRequestEvent(
+            override val deviceId: String,
+            val row: ExtensionRequestRow,
+        ) : Event()
+
+        /** v2:设备上线(离线 → 在线跳变),SSE 事件名 device_online。 */
+        data class DeviceOnline(override val deviceId: String) : Event()
     }
 
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -85,6 +98,12 @@ class RealtimeEventService {
             msgId = event.msgId, output = event.buttonText,
         )
         is Event.DeviceOffline -> EventDto(type = "device_offline", deviceId = event.deviceId)
+        is Event.ExtensionRequestEvent -> EventDto(
+            type = "extension_request", deviceId = event.deviceId,
+            status = event.row.status, msgId = event.row.requestId,
+            data = json.encodeToJsonElement(ExtensionRequestRow.serializer(), event.row),
+        )
+        is Event.DeviceOnline -> EventDto(type = "device_online", deviceId = event.deviceId, status = "online")
     }
 
     fun serialize(event: Event): String = json.encodeToString(EventDto.serializer(), toDto(event))

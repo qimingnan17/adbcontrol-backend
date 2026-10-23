@@ -25,9 +25,11 @@ data class UpdateCheckResponse(
     val patchUrl: String? = null,
     val patchFromVersionCode: Int = 0,
     val patchToVersionCode: Int = 0,
-    val sha256: String = "",
+    /** v2:APK SHA-256(64 位小写 hex);旧清单未登记时为 null,被控端照常安装但记 warning */
+    val sha256: String? = null,
     val sizeBytes: Long = 0,
     val forceUpdate: Boolean = false,
+    val protocolVersion: Int = com.adbcontrol.shared.ProtocolVersion.CURRENT,
 )
 
 enum class UpdatePriority { NORMAL, HIGH, CRITICAL }
@@ -55,8 +57,12 @@ data class VersionManifest(
     val patchUrl: String? = null,
     val patchFromVersionCode: Int = 0,
     val patchToVersionCode: Int = 0,
-    val sha256: String,
-    val sizeBytes: Long,
-    val releaseNotes: String,
+    /**
+     * v2:可空。缺省/空串且 fullApkUrl 是 GitHub Release 资产时,后端首次拉取时计算并回填;
+     * 非 GitHub 资产必须显式提供(64 位 hex,大小写不限,入库统一小写)。
+     */
+    val sha256: String? = null,
+    val sizeBytes: Long = 0,
+    val releaseNotes: String = "",
     val priority: UpdatePriority = UpdatePriority.NORMAL,
 )

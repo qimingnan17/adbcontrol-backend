@@ -7,7 +7,7 @@ package com.adbcontrol.shared.net
  * 设计参见 README 第四章 4.3。
  *
  * - 主控 → 被控:cmd / reminder / push / ping
- * - 被控 → 主控:result / status / health / location / activity / usage / pong
+ * - 被控 → 主控:result / status / health / location / activity / usage / pong / request(v2)
  * - LWT:device/offline/{deviceId}(被控掉线)、controller/offline/{controllerId}(主控掉线)
  *
  * `{deviceId}` 为被控端唯一标识,`+` 为单层通配符。
@@ -27,6 +27,8 @@ object MqttTopics {
     const val LOCATION_PREFIX = "location/"
     const val ACTIVITY_PREFIX = "activity/"
     const val USAGE_PREFIX = "usage/"
+    /** v2:被控端发起的请求(如 EXTENSION_REQUEST 申请延时),QoS 1 */
+    const val REQUEST_PREFIX = "request/"
 
     // LWT
     const val DEVICE_OFFLINE_PREFIX = "device/offline/"
@@ -43,6 +45,7 @@ object MqttTopics {
     fun location(deviceId: String) = "$LOCATION_PREFIX$deviceId"
     fun activity(deviceId: String) = "$ACTIVITY_PREFIX$deviceId"
     fun usage(deviceId: String) = "$USAGE_PREFIX$deviceId"
+    fun request(deviceId: String) = "$REQUEST_PREFIX$deviceId"
     fun deviceOffline(deviceId: String) = "$DEVICE_OFFLINE_PREFIX$deviceId"
     fun controllerOffline(controllerId: String) = "$CONTROLLER_OFFLINE_PREFIX$controllerId"
 
@@ -56,13 +59,14 @@ object MqttTopics {
         "${USAGE_PREFIX}+",
         "${PONG_PREFIX}+",
         "$DEVICE_OFFLINE_PREFIX+",
+        "${REQUEST_PREFIX}+",
     )
 
     /**
      * 与 [subscriptions] 一一对应的 QoS。被控端发布侧 pong/result 等多用 QoS 0,
      * 主控端订阅侧 QoS 不应高于发布侧,否则占用 EMQX Serverless 存储配额(500MB)。
      */
-    val subscriptionQos: List<Int> = listOf(0, 0, 0, 0, 0, 0, 0, 1)
+    val subscriptionQos: List<Int> = listOf(0, 0, 0, 0, 0, 0, 0, 1, 1)
 
     /** 被控端订阅集合(主控 → 被控方向)。 */
     val controlledSubscriptions: List<String> = listOf(
@@ -95,6 +99,7 @@ object MqttTopics {
             topic.startsWith(LOCATION_PREFIX) -> IncomingCategory.LOCATION
             topic.startsWith(ACTIVITY_PREFIX) -> IncomingCategory.ACTIVITY
             topic.startsWith(USAGE_PREFIX) -> IncomingCategory.USAGE
+            topic.startsWith(REQUEST_PREFIX) -> IncomingCategory.REQUEST
             topic.startsWith(DEVICE_OFFLINE_PREFIX) -> IncomingCategory.DEVICE_OFFLINE
             topic.startsWith(CONTROLLER_OFFLINE_PREFIX) -> IncomingCategory.CONTROLLER_OFFLINE
             else -> null
@@ -103,7 +108,9 @@ object MqttTopics {
 }
 
 enum class IncomingCategory {
-    RESULT, PONG, STATUS, HEALTH, LOCATION, ACTIVITY, USAGE, DEVICE_OFFLINE, CONTROLLER_OFFLINE
+    RESULT, PONG, STATUS, HEALTH, LOCATION, ACTIVITY, USAGE, DEVICE_OFFLINE, CONTROLLER_OFFLINE,
+    /** v2:request/{deviceId} */
+    REQUEST,
 }
 
 /** 从 topic 提取 deviceId 的便捷扩展。 */
